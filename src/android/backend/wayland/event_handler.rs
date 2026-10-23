@@ -1,7 +1,10 @@
 use crate::android::{
     accessibility,
     backend::wayland::{
-        compositor::{send_frames_surface_tree, ClientState, State},
+        compositor::{
+            send_frames_surface_tree, surface_scale, take_presentation_feedback_surface_tree,
+            ClientState, State,
+        },
         write_guest_output_state, CentralizedEvent, TouchMode, WaylandBackend,
     },
 };
@@ -9,23 +12,28 @@ use smithay::backend::input::ButtonState;
 use smithay::backend::renderer::element::surface::{
     render_elements_from_surface_tree, WaylandSurfaceRenderElement,
 };
+use smithay::backend::renderer::element::utils::RescaleRenderElement;
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::utils::draw_render_elements;
 use smithay::backend::renderer::{Color32F, Frame, Renderer};
 use smithay::input::keyboard::FilterResult;
-use smithay::input::pointer;
+use smithay::input::{pointer, touch};
 use smithay::reexports::wayland_server::protocol::wl_pointer::ButtonState as WlButtonState;
+use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
 use smithay::utils::{Point, Rectangle, Transform, SERIAL_COUNTER};
+use smithay::wayland::presentation::Refresh;
 use smithay::wayland::shell::xdg::ToplevelSurface;
 use smithay::{
     backend::input::{
-        AbsolutePositionEvent, Axis, Event, InputEvent, KeyboardKeyEvent, PointerAxisEvent,
+        AbsolutePositionEvent, Axis, AxisSource, Event, InputEvent, KeyboardKeyEvent, PointerAxisEvent,
         PointerButtonEvent,
     },
     output::{Mode, Scale},
 };
 use std::sync::Arc;
+use std::time::Duration;
+use winit::event::TouchPhase;
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 
 /// Linux input event code for the left mouse button (`BTN_LEFT`).
@@ -45,13 +53,20 @@ fn get_surface(state: &State) -> Option<ToplevelSurface> {
         .cloned()
 }
 
-fn pointer_focus(
+/// The pointer focus for window position `(x, y)`, with the position converted into that surface's
+/// coordinate space (scale-aware surfaces work in logical units).
+fn pointer_target(
     state: &State,
+    x: f64,
+    y: f64,
 ) -> Option<(
     smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
     Point<f64, smithay::utils::Logical>,
 )> {
-    get_surface(state).map(|surface| (surface.wl_surface().clone(), (0f64, 0f64).into()))
+    get_surface(state).map(|surface| {
+        let scale = surface_scale(surface.wl_surface()).unwrap_or(1.0);
+        (surface.wl_surface().clone(), (x / scale, y / scale).into())
+    })
 }
 
 fn emit_pointer_motion(
@@ -62,13 +77,13 @@ fn emit_pointer_motion(
 ) {
     let pointer = compositor.pointer.clone();
     let state = &mut compositor.state;
-    if let Some(focus) = pointer_focus(state) {
+    if let Some((surface, location)) = pointer_target(state, x, y) {
         let serial = SERIAL_COUNTER.next_serial();
         pointer.motion(
             state,
-            Some(focus),
+            Some((surface, (0f64, 0f64).into())),
             &pointer::MotionEvent {
-                location: (x, y).into(),
+                location,
                 serial,
                 time,
             },
@@ -125,6 +140,80 @@ fn emit_pointer_release(
         },
     );
     pointer.frame(state);
+}
+
+/// End a finger scroll, so clients finish it (e.g. start a kinetic fling) instead of waiting.
+fn emit_axis_stop(compositor: &mut crate::android::backend::wayland::Compositor, time: u32) {
+    let pointer = compositor.pointer.clone();
+    let state = &mut compositor.state;
+    let frame = pointer::AxisFrame::new(time)
+        .source(AxisSource::Finger)
+        .stop(Axis::Horizontal)
+        .stop(Axis::Vertical);
+    pointer.axis(state, frame);
+    pointer.frame(state);
+}
+
+/// Forward a touch to the session's surface as `wl_touch`, leaving gestures to the client.
+fn emit_native_touch(
+    compositor: &mut crate::android::backend::wayland::Compositor,
+    phase: TouchPhase,
+    id: u64,
+    x: f64,
+    y: f64,
+    time: u32,
+) {
+    let touch = compositor.touch.clone();
+    let state = &mut compositor.state;
+    let slot = Some(id as u32).into();
+    match phase {
+        TouchPhase::Started => {
+            let Some((surface, location)) = pointer_target(state, x, y) else {
+                return;
+            };
+            // Typing goes where the finger last landed, as with a mouse click.
+            compositor
+                .keyboard
+                .set_focus(state, Some(surface.clone()), SERIAL_COUNTER.next_serial());
+            touch.down(
+                state,
+                Some((surface, (0f64, 0f64).into())),
+                &touch::DownEvent {
+                    slot,
+                    location,
+                    serial: SERIAL_COUNTER.next_serial(),
+                    time,
+                },
+            );
+        }
+        TouchPhase::Moved => {
+            let Some((surface, location)) = pointer_target(state, x, y) else {
+                return;
+            };
+            touch.motion(
+                state,
+                Some((surface, (0f64, 0f64).into())),
+                &touch::MotionEvent {
+                    slot,
+                    location,
+                    time,
+                },
+            );
+        }
+        TouchPhase::Ended => touch.up(
+            state,
+            &touch::UpEvent {
+                slot,
+                serial: SERIAL_COUNTER.next_serial(),
+                time,
+            },
+        ),
+        TouchPhase::Cancelled => {
+            touch.cancel(state);
+            return;
+        }
+    }
+    touch.frame(state);
 }
 
 /// A full tap: move to the location, then a press immediately followed by a release.
@@ -184,23 +273,29 @@ pub fn handle(event: CentralizedEvent, backend: &mut WaylandBackend, event_loop:
                 return;
             }
 
-            // Redraw the application.
-            //
-            // It's preferable for applications that do not render continuously to render in
-            // this event rather than in AboutToWait, since rendering in here allows
-            // the program to gracefully handle redraws requested by the OS.
-
-            // Draw.
-
-            // Queue a RedrawRequested event.
-            //
-            // You only need to call this if you've determined that you need to redraw in
-            // applications which do not always need to. Applications that redraw continuously
-            // can render here instead.
-            if let Some(winit) = backend.graphic_renderer.as_ref() {
-                winit.window().request_redraw();
+            // Redraw again only while there is something to show: a client committed during
+            // this frame (an animation), or a finger is down (long presses are detected from
+            // here). Otherwise the app sleeps until a client wakes it (see `wake`), instead of
+            // redrawing unchanged content at every display refresh.
+            if backend.compositor.state.needs_redraw || !backend.touch_points.is_empty() {
+                if let Some(winit) = backend.graphic_renderer.as_ref() {
+                    winit.window().request_redraw();
+                }
             }
         }
+        CentralizedEvent::NativeTouch {
+            phase,
+            id,
+            location,
+            time,
+        } => emit_native_touch(
+            &mut backend.compositor,
+            phase,
+            id,
+            location.x,
+            location.y,
+            time as u32,
+        ),
         CentralizedEvent::Input(event) => match event {
             InputEvent::Keyboard { event } => {
                 let compositor = &mut backend.compositor;
@@ -267,12 +362,16 @@ pub fn handle(event: CentralizedEvent, backend: &mut WaylandBackend, event_loop:
                             event.y,
                             time,
                         ),
-                        // A scroll consumed the gesture; nothing to click.
-                        TouchMode::Scroll | TouchMode::Drag => {}
+                        // A scroll consumed the gesture; nothing to click, just end the scroll.
+                        TouchMode::Scroll => emit_axis_stop(&mut backend.compositor, time),
+                        TouchMode::Drag => {}
                     }
                 }
             }
             InputEvent::TouchCancel { event } => {
+                if event.mode == TouchMode::Scroll {
+                    emit_axis_stop(&mut backend.compositor, event.time() as u32);
+                }
                 if backend.pointer_pressed {
                     emit_pointer_release(&mut backend.compositor, BTN_LEFT, event.time() as u32);
                     backend.pointer_pressed = false;
@@ -283,12 +382,14 @@ pub fn handle(event: CentralizedEvent, backend: &mut WaylandBackend, event_loop:
                 let pointer = compositor.pointer.clone();
                 let serial = SERIAL_COUNTER.next_serial();
 
-                if let Some(surface) = get_surface(&compositor.state) {
+                if let Some((surface, location)) =
+                    pointer_target(&compositor.state, event.x(), event.y())
+                {
                     pointer.motion(
                         &mut compositor.state,
-                        Some((surface.wl_surface().clone(), (0f64, 0f64).into())),
+                        Some((surface, (0f64, 0f64).into())),
                         &pointer::MotionEvent {
-                            location: (event.x(), event.y()).into(),
+                            location,
                             serial,
                             time: event.time_msec(),
                         },
@@ -330,11 +431,18 @@ pub fn handle(event: CentralizedEvent, backend: &mut WaylandBackend, event_loop:
                     emit_pointer_release(&mut backend.compositor, BTN_LEFT, event.time_msec());
                     backend.pointer_pressed = false;
                 }
+                // Scroll distances are in window pixels; scale-aware surfaces expect logical units,
+                // or content would outrun the finger.
+                let scale = get_surface(&backend.compositor.state)
+                    .and_then(|surface| surface_scale(surface.wl_surface()))
+                    .unwrap_or(1.0);
                 let horizontal_amount = event
                     .amount(Axis::Horizontal)
+                    .map(|amount| amount / scale)
                     .unwrap_or_else(|| event.amount_v120(Axis::Horizontal).unwrap_or(0.0) / 120.);
                 let vertical_amount = event
                     .amount(Axis::Vertical)
+                    .map(|amount| amount / scale)
                     .unwrap_or_else(|| event.amount_v120(Axis::Vertical).unwrap_or(0.0) / 120.);
                 let horizontal_amount_discrete = event.amount_v120(Axis::Horizontal);
                 let vertical_amount_discrete = event.amount_v120(Axis::Vertical);
@@ -380,8 +488,6 @@ pub fn handle(event: CentralizedEvent, backend: &mut WaylandBackend, event_loop:
             size,
             guest_scale_factor,
         } => {
-            backend.compositor.state.size = (size.w, size.h).into();
-
             if let Some(output) = &backend.compositor.output {
                 output.change_current_state(
                     Some(Mode {
@@ -397,21 +503,43 @@ pub fn handle(event: CentralizedEvent, backend: &mut WaylandBackend, event_loop:
             let guest_scale = guest_scale_factor.round().max(1.0) as i32;
             write_guest_output_state(size.w, size.h, guest_scale);
 
-            if let Some(surface) = get_surface(&backend.compositor.state) {
-                surface.xdg_toplevel().configure(size.w, size.h, vec![]);
-            }
+            backend
+                .compositor
+                .state
+                .set_host_geometry((size.w, size.h).into(), guest_scale_factor);
         }
         _ => (),
     }
 }
 
 fn redraw(backend: &mut WaylandBackend) -> Result<(), String> {
+    if backend.graphic_renderer.is_none() {
+        return Ok(());
+    }
+
+    // Take the clients' latest commits first, so this frame shows them.
+    dispatch_clients(&mut backend.compositor);
+    backend.compositor.state.needs_redraw = false;
+
+    // Frame callbacks go out as soon as the commits are taken, before drawing: clients (KWin)
+    // render their next frame while this one is uploaded and drawn, instead of after it, which
+    // made the two serial (KWin's render + our upload + swap per frame, ~50 fps).
+    {
+        let compositor = &mut backend.compositor;
+        let time = compositor.start_time.elapsed().as_millis() as u32;
+        for surface in compositor.state.xdg_shell_state.toplevel_surfaces() {
+            send_frames_surface_tree(surface.wl_surface(), time);
+        }
+        flush_clients(compositor);
+    }
     let Some(winit) = backend.graphic_renderer.as_mut() else {
         return Ok(());
     };
 
+    let started = std::time::Instant::now();
     let size = winit.window_size();
     let damage = Rectangle::from_size(size);
+    let mut presentation_feedback = Vec::new();
     {
         let (renderer, mut framebuffer) = winit
             .bind()
@@ -425,7 +553,10 @@ fn redraw(backend: &mut WaylandBackend) -> Result<(), String> {
             .toplevel_surfaces()
             .iter()
             .flat_map(|surface| {
-                render_elements_from_surface_tree(
+                // The scale passed here only positions subsurfaces; element sizes come from the
+                // draw scale, so scale-aware surfaces are scaled up by wrapping each element.
+                let scale = surface_scale(surface.wl_surface()).unwrap_or(1.0);
+                render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<GlesRenderer>>(
                     renderer,
                     surface.wl_surface(),
                     (0, 0),
@@ -433,8 +564,10 @@ fn redraw(backend: &mut WaylandBackend) -> Result<(), String> {
                     1.0,
                     Kind::Unspecified,
                 )
+                .into_iter()
+                .map(move |element| RescaleRenderElement::from_element(element, (0, 0).into(), scale))
             })
-            .collect::<Vec<WaylandSurfaceRenderElement<GlesRenderer>>>();
+            .collect::<Vec<_>>();
 
         let mut frame = renderer
             .render(&mut framebuffer, size, Transform::Flipped180)
@@ -449,41 +582,80 @@ fn redraw(backend: &mut WaylandBackend) -> Result<(), String> {
             .finish()
             .map_err(|error| format!("Failed to finish frame: {error:?}"))?;
 
-        for surface in compositor.state.xdg_shell_state.toplevel_surfaces() {
-            send_frames_surface_tree(
-                surface.wl_surface(),
-                compositor.start_time.elapsed().as_millis() as u32,
-            );
-        }
-
-        match compositor.listener.accept() {
-            Ok(Some(stream)) => match compositor
-                .display
-                .handle()
-                .insert_client(stream, Arc::new(ClientState::default()))
-            {
-                Ok(client) => compositor.clients.push(client),
-                Err(error) => log::error!("Failed to insert Wayland client: {error}"),
-            },
-            Ok(None) => {}
-            Err(error) => log::error!("Failed to accept Wayland client: {error}"),
-        }
-
-        compositor
-            .display
-            .dispatch_clients(&mut compositor.state)
-            .map_err(|error| format!("Failed to dispatch clients: {error}"))?;
-        compositor
-            .display
-            .flush_clients()
-            .map_err(|error| format!("Failed to flush clients: {error}"))?;
     }
 
-    // It is important that all events on the display have been dispatched and flushed to clients
-    // before swapping buffers because this operation may block.
+    let submitting = std::time::Instant::now();
     winit
         .submit(Some(&[damage]))
         .map_err(|error| format!("Failed to submit frame: {error}"))?;
+    super::frame_stats::redrawn(submitting - started, submitting.elapsed());
+
+    let compositor = &mut backend.compositor;
+    for surface in compositor.state.xdg_shell_state.toplevel_surfaces() {
+        take_presentation_feedback_surface_tree(surface.wl_surface(), &mut presentation_feedback);
+    }
+
+    // Report the frame as presented once it has been swapped; nested compositors (KWin) pace
+    // their own rendering from this feedback.
+    compositor.frame_seq += 1;
+    match &compositor.output {
+        Some(output) => {
+            let now = Duration::from(compositor.clock.now());
+            let refresh = output
+                .current_mode()
+                .filter(|mode| mode.refresh > 0)
+                .map(|mode| Refresh::fixed(Duration::from_secs_f64(1000.0 / mode.refresh as f64)))
+                .unwrap_or(Refresh::Unknown);
+            for feedback in presentation_feedback {
+                feedback.presented(
+                    output,
+                    now,
+                    refresh,
+                    compositor.frame_seq,
+                    wp_presentation_feedback::Kind::Vsync,
+                );
+            }
+        }
+        None => presentation_feedback
+            .into_iter()
+            .for_each(|feedback| feedback.discarded()),
+    }
+    flush_clients(compositor);
 
     Ok(())
+}
+
+/// Accept new clients and handle what the connected ones sent, then let the wake thread watch
+/// for more.
+pub fn dispatch_clients(compositor: &mut crate::android::backend::wayland::Compositor) {
+    match compositor.listener.accept() {
+        Ok(Some(stream)) => match compositor
+            .display
+            .handle()
+            .insert_client(stream, Arc::new(ClientState::default()))
+        {
+            Ok(client) => compositor.clients.push(client),
+            Err(error) => log::error!("Failed to insert Wayland client: {error}"),
+        },
+        Ok(None) => {}
+        Err(error) => log::error!("Failed to accept Wayland client: {error}"),
+    }
+    if let Err(error) = compositor.display.dispatch_clients(&mut compositor.state) {
+        log::error!("Failed to dispatch clients: {error}");
+    }
+    flush_clients(compositor);
+    let waker = compositor.waker.get_or_insert_with(|| {
+        use std::os::fd::AsRawFd;
+        super::wake::Waker::spawn([
+            compositor.listener.as_raw_fd(),
+            compositor.display.backend().poll_fd().as_raw_fd(),
+        ])
+    });
+    waker.rearm();
+}
+
+pub fn flush_clients(compositor: &mut crate::android::backend::wayland::Compositor) {
+    if let Err(error) = compositor.display.flush_clients() {
+        log::error!("Failed to flush clients: {error}");
+    }
 }

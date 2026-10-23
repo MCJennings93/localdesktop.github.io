@@ -58,10 +58,13 @@ Action readlink_proc(const Tracee *tracee, char result[PATH_MAX],
 	switch (comparison) {
 	case PATHS_ARE_EQUAL:
 		/* Substitute "/proc/self" with "/proc/<PID>".  */
-		if (strcmp(component, "self") != 0)
+		if (strcmp(component, "self") == 0)
+			status = snprintf(result, PATH_MAX, "/proc/%d", tracee->tgid);
+		else if (strcmp(component, "thread-self") == 0)
+			status = snprintf(result, PATH_MAX, "/proc/%d/task/%d", tracee->tgid, tracee->pid);
+		else
 			return DEFAULT;
 
-		status = snprintf(result, PATH_MAX, "/proc/%d", tracee->pid);
 		if (status < 0 || status >= PATH_MAX)
 			return -EPERM;
 

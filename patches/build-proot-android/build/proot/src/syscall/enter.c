@@ -20,7 +20,8 @@
  * 02110-1301 USA.
  */
 
-#include <errno.h>       /* errno(3), E* */
+#include <errno.h>
+#include <stdlib.h>
 #include <talloc.h>      /* talloc_*, */
 #include <sys/un.h>      /* struct sockaddr_un, */
 #include <linux/net.h>   /* SYS_*, */
@@ -149,6 +150,8 @@ int translate_syscall_enter(Tracee *tracee)
 	case PR_wait4:
 	case PR_waitpid:
 		status = translate_wait_enter(tracee);
+		tracee->sysexit_unneeded = status >= 0
+			&& tracee->as_ptracer.waits_in == WAITS_IN_KERNEL;
 		break;
 
 	case PR_brk:
@@ -196,6 +199,20 @@ int translate_syscall_enter(Tracee *tracee)
 		if ((statl.st_mode & S_IXUSR) == 0)
 			return -EACCES;
 
+
+
+
+		if (getenv("PROOT_FASTPATH") != NULL) {
+			int fd = open(path, O_PATH | O_DIRECTORY | O_CLOEXEC);
+
+
+
+
+			strcpy(oldpath, fd >= 0 ? path : "/");
+			if (fd >= 0)
+				close(fd);
+		}
+
 		/* Sadly this method doesn't detranslate statefully,
 		 * this means that there's an ambiguity when several
 		 * bindings are from the same host path:
@@ -226,6 +243,14 @@ int translate_syscall_enter(Tracee *tracee)
 
 		tracee->fs->cwd = tmp;
 		talloc_set_name_const(tracee->fs->cwd, "$cwd");
+
+		if (getenv("PROOT_FASTPATH") != NULL) {
+
+			status = syscall_number == PR_chdir
+				? set_sysarg_path(tracee, oldpath, SYSARG_1)
+				: 0;
+			break;
+		}
 
 		set_sysnum(tracee, PR_void);
 		status = 0;
@@ -271,6 +296,7 @@ int translate_syscall_enter(Tracee *tracee)
 	case PR_accept4:
 		/* Nothing special to do if no sockaddr was specified.  */
 		if (peek_reg(tracee, ORIGINAL, SYSARG_2) == 0) {
+			tracee->sysexit_unneeded = true;
 			status = 0;
 			break;
 		}
@@ -400,6 +426,13 @@ int translate_syscall_enter(Tracee *tracee)
 
 	case PR_open:
 		flags = peek_reg(tracee, CURRENT, SYSARG_2);
+#ifdef __ANDROID__
+
+		if ((flags & __O_TMPFILE) != 0) {
+			status = -EOPNOTSUPP;
+			break;
+		}
+#endif
 
 		if (   ((flags & O_NOFOLLOW) != 0)
 		    || ((flags & O_EXCL) != 0 && (flags & O_CREAT) != 0))
@@ -442,6 +475,33 @@ int translate_syscall_enter(Tracee *tracee)
 			break;
 
 		status = translate_path2(tracee, dirfd, path, SYSARG_2, REGULAR);
+		break;
+
+	case PR_fchmodat2:
+		dirfd = peek_reg(tracee, CURRENT, SYSARG_1);
+		flags = peek_reg(tracee, CURRENT, SYSARG_4);
+
+		status = get_sysarg_path(tracee, path, SYSARG_2);
+		if (status < 0)
+			break;
+
+		if ((flags & AT_SYMLINK_NOFOLLOW) != 0)
+			status = translate_path2(tracee, dirfd, path, SYSARG_2, SYMLINK);
+		else
+			status = translate_path2(tracee, dirfd, path, SYSARG_2, REGULAR);
+		break;
+
+	case PR_openat2:
+		status = -ENOSYS;
+		break;
+
+
+
+	case PR_open_tree:
+	case PR_move_mount:
+	case PR_fspick:
+	case PR_mount_setattr:
+		status = -ENOSYS;
 		break;
 
 	case PR_inotify_add_watch:
@@ -518,6 +578,12 @@ int translate_syscall_enter(Tracee *tracee)
 	case PR_openat:
 		dirfd = peek_reg(tracee, CURRENT, SYSARG_1);
 		flags = peek_reg(tracee, CURRENT, SYSARG_3);
+#ifdef __ANDROID__
+		if ((flags & __O_TMPFILE) != 0) {
+			status = -EOPNOTSUPP;
+			break;
+		}
+#endif
 
 		status = get_sysarg_path(tracee, path, SYSARG_2);
 		if (status < 0)

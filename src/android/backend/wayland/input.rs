@@ -141,7 +141,10 @@ impl PointerAxisEvent<WinitInput> for WinitMouseWheelEvent {
     fn source(&self) -> AxisSource {
         match self.delta {
             MouseScrollDelta::LineDelta(_, _) => AxisSource::Wheel,
-            MouseScrollDelta::PixelDelta(_) => AxisSource::Continuous,
+            // Pixel deltas only come from touch scrolling. Finger (rather than Continuous) tells
+            // clients to scroll by the pixel value and to expect an axis_stop, so Qt applies it
+            // 1:1 with kinetic flicks instead of converting it into wheel steps.
+            MouseScrollDelta::PixelDelta(_) => AxisSource::Finger,
         }
     }
 
@@ -338,6 +341,8 @@ impl TouchEvent<WinitInput> for WinitTouchEndedEvent {
 pub struct WinitTouchCancelledEvent {
     pub(crate) time: u64,
     pub(crate) id: u64,
+    /// What the gesture had been resolved to when it was cancelled.
+    pub(crate) mode: TouchMode,
 }
 
 impl Event<WinitInput> for WinitTouchCancelledEvent {

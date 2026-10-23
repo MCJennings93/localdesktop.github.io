@@ -1144,6 +1144,15 @@ impl ImportDma for GlesRenderer {
         _damage: Option<&[Rectangle<i32, BufferCoord>]>,
     ) -> Result<GlesTexture, GlesError> {
         use crate::backend::allocator::Buffer;
+        // Local Desktop: Android's EGL has no EGL_EXT_image_dma_buf_import, so linear
+        // single-plane dmabufs (KWin rendering with Zink on Turnip/KGSL) are mapped and
+        // uploaded like shm buffers instead.
+        if self.egl.dmabuf_texture_formats().indexset().is_empty() {
+            #[cfg(feature = "wayland_frontend")]
+            return self.import_dmabuf_by_copy(buffer, None, &[]);
+            #[cfg(not(feature = "wayland_frontend"))]
+            return Err(GlesError::EGLExtensionNotSupported(&["EGL_EXT_image_dma_buf_import"]));
+        }
         if !self.extensions.iter().any(|ext| ext == "GL_OES_EGL_image") {
             return Err(GlesError::GLExtensionNotSupported(&["GL_OES_EGL_image"]));
         }
@@ -1187,9 +1196,184 @@ impl ImportDma for GlesRenderer {
 }
 
 #[cfg(feature = "wayland_frontend")]
-impl ImportDmaWl for GlesRenderer {}
+impl ImportDmaWl for GlesRenderer {
+    fn import_dma_buffer(
+        &mut self,
+        buffer: &wl_buffer::WlBuffer,
+        surface: Option<&crate::wayland::compositor::SurfaceData>,
+        damage: &[Rectangle<i32, BufferCoord>],
+    ) -> Result<GlesTexture, GlesError> {
+        let dmabuf = crate::wayland::dmabuf::get_dmabuf(buffer)
+            .expect("import_dma_buffer without checking buffer type?");
+        // Local Desktop: see `import_dmabuf_by_copy`.
+        if self.egl.dmabuf_texture_formats().indexset().is_empty() {
+            return self.import_dmabuf_by_copy(dmabuf, surface, damage);
+        }
+        self.import_dmabuf(dmabuf, Some(damage))
+    }
+}
+
+/// Per-surface textures of [`GlesRenderer::import_dmabuf_by_copy`], by renderer id. A type of its
+/// own, so it can't meet the shm cache in the surface's data map.
+#[cfg(feature = "wayland_frontend")]
+struct DmabufCopyCache(HashMap<usize, Arc<GlesTextureInternal>>);
 
 impl GlesRenderer {
+    /// Upload a linear, single-plane dmabuf through a CPU mapping (Local Desktop, see
+    /// `import_dmabuf`). Like shm buffers, a surface keeps one texture whatever buffer it
+    /// attaches, and only the damaged rectangles are copied into it: Wayland damage is relative
+    /// to the surface's previous content, which the texture holds. Reading KGSL memory through
+    /// the CPU is slow, so full-frame copies cost more than KWin saves by compositing on the GPU.
+    /// Without a surface the texture is kept per dmabuf and refilled whole.
+    #[cfg(feature = "wayland_frontend")]
+    #[profiling::function]
+    fn import_dmabuf_by_copy(
+        &mut self,
+        buffer: &Dmabuf,
+        surface: Option<&crate::wayland::compositor::SurfaceData>,
+        damage: &[Rectangle<i32, BufferCoord>],
+    ) -> Result<GlesTexture, GlesError> {
+        use crate::backend::allocator::{Buffer, Modifier};
+        use std::os::unix::io::AsRawFd;
+
+        let format = buffer.format();
+        let supported = if self.gl_version.major >= 3 {
+            SUPPORTED_MEM_FORMATS_3
+        } else {
+            SUPPORTED_MEM_FORMATS_2
+        };
+        if buffer.num_planes() != 1
+            || !matches!(format.modifier, Modifier::Linear | Modifier::Invalid)
+            || !supported.contains(&format.code)
+        {
+            return Err(GlesError::UnsupportedPixelFormat(format.code));
+        }
+        let size = buffer.size();
+        let (width, height) = (size.w, size.h);
+        let fd = buffer.handles().next().ok_or(GlesError::UnsupportedPixelLayout)?;
+        let offset = buffer.offsets().next().unwrap_or(0) as usize;
+        let stride = buffer.strides().next().unwrap_or(0) as usize;
+        let (mut internal_format, read_format, type_) =
+            fourcc_to_gl_formats(format.code).ok_or(GlesError::UnsupportedPixelFormat(format.code))?;
+        if self.gl_version.major == 2 {
+            internal_format = match internal_format {
+                ffi::BGRA_EXT => ffi::BGRA_EXT,
+                ffi::RGBA8 => ffi::RGBA,
+                ffi::RGB8 => ffi::RGB,
+                _ => unreachable!(),
+            };
+        }
+        let pixelsize = gl_bpp(read_format, type_).expect("We check the format before") / 8;
+        if stride < width as usize * pixelsize || stride % pixelsize != 0 {
+            return Err(GlesError::UnsupportedPixelLayout);
+        }
+        let len = offset + stride * height as usize;
+
+        let mut surface_lock = surface.map(|surface_data| {
+            surface_data
+                .data_map
+                .get_or_insert_threadsafe(|| Mutex::new(DmabufCopyCache(HashMap::new())))
+                .lock()
+                .unwrap()
+        });
+        let id = self.id();
+        let cached = match surface_lock.as_ref() {
+            Some(cache) => cache.0.get(&id).cloned().map(GlesTexture),
+            None => self.dmabuf_cache.get(&buffer.weak()).cloned(),
+        }
+        .filter(|texture| {
+            texture.0.size == size
+                && texture.0.format == Some(internal_format)
+                && texture.0.y_inverted == buffer.y_inverted()
+        });
+        let upload_full = cached.is_none() || damage.is_empty();
+        let texture = cached.unwrap_or_else(|| {
+            let mut tex = 0;
+            unsafe { self.gl.GenTextures(1, &mut tex) };
+            let texture = GlesTexture(Arc::new(GlesTextureInternal {
+                texture: tex,
+                sync: RwLock::default(),
+                format: Some(internal_format),
+                has_alpha: has_alpha(format.code),
+                is_external: false,
+                y_inverted: buffer.y_inverted(),
+                size,
+                egl_images: None,
+                destruction_callback_sender: self.destruction_callback_sender.clone(),
+            }));
+            match surface_lock.as_mut() {
+                Some(cache) => {
+                    cache.0.insert(id, texture.0.clone());
+                }
+                None => {
+                    self.dmabuf_cache.insert(buffer.weak(), texture.clone());
+                }
+            }
+            texture
+        });
+
+        // No DMA_BUF_IOCTL_SYNC around the reads: KGSL maps these buffers uncached, the copies
+        // showed no stale data without it, and its cache maintenance over the whole buffer cost
+        // 10-17% of the app's CPU per frame.
+        let raw = fd.as_raw_fd();
+        let ptr = unsafe { libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ, libc::MAP_SHARED, raw, 0) };
+        if ptr == libc::MAP_FAILED {
+            return Err(GlesError::UnsupportedPixelLayout);
+        }
+        let result = (|| {
+            let mut sync_lock = texture.0.sync.write().unwrap();
+            unsafe {
+                self.egl.make_current()?;
+                sync_lock.wait_for_all(&self.gl);
+                self.gl.BindTexture(ffi::TEXTURE_2D, texture.0.texture);
+                self.gl
+                    .TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_WRAP_S, ffi::CLAMP_TO_EDGE as i32);
+                self.gl
+                    .TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_WRAP_T, ffi::CLAMP_TO_EDGE as i32);
+                self.gl
+                    .PixelStorei(ffi::UNPACK_ROW_LENGTH, (stride / pixelsize) as i32);
+                let pixels = (ptr as *const u8).add(offset) as *const _;
+                if upload_full {
+                    self.gl.TexImage2D(
+                        ffi::TEXTURE_2D,
+                        0,
+                        internal_format as i32,
+                        width,
+                        height,
+                        0,
+                        read_format,
+                        type_,
+                        pixels,
+                    );
+                } else {
+                    let bounds = Rectangle::from_size((width, height).into());
+                    for region in damage.iter().filter_map(|region| region.intersection(bounds)) {
+                        self.gl.PixelStorei(ffi::UNPACK_SKIP_PIXELS, region.loc.x);
+                        self.gl.PixelStorei(ffi::UNPACK_SKIP_ROWS, region.loc.y);
+                        self.gl.TexSubImage2D(
+                            ffi::TEXTURE_2D,
+                            0,
+                            region.loc.x,
+                            region.loc.y,
+                            region.size.w,
+                            region.size.h,
+                            read_format,
+                            type_,
+                            pixels,
+                        );
+                    }
+                    self.gl.PixelStorei(ffi::UNPACK_SKIP_PIXELS, 0);
+                    self.gl.PixelStorei(ffi::UNPACK_SKIP_ROWS, 0);
+                }
+                self.gl.PixelStorei(ffi::UNPACK_ROW_LENGTH, 0);
+                self.gl.BindTexture(ffi::TEXTURE_2D, 0);
+            }
+            Ok(texture.clone())
+        })();
+        unsafe { libc::munmap(ptr, len) };
+        result
+    }
+
     #[profiling::function]
     fn existing_dmabuf_texture(&self, buffer: &Dmabuf) -> Result<Option<GlesTexture>, GlesError> {
         let Some(texture) = self.dmabuf_cache.get(&buffer.weak()) else {

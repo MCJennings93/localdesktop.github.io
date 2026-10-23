@@ -130,3 +130,7 @@ Recommended setup:
 > **Tip**: You can debug the app on either a physical device or a virtual device.
 
 For more instructions on how to work on this project, please visit the [Developer Manual](https://localdesktop.github.io/docs/developer/how-it-works).
+## Credits
+
+- The app icon is Tux by Larry Ewing (lewing@isc.tamu.edu), created with The GIMP.
+- The proot performance patches (`patches/build-proot-android/patches/`), the KGSL render node setup in `src/android/proot/process.rs` and the guest's KGSL DRM shim follow [DroidDeck](https://github.com/Droid-Deck/DroidDeck) (GPL-3.0), much of whose proot work was ported from WinNative.

@@ -68,6 +68,30 @@ pub fn scale_factor(android_app: &AndroidApp) -> f64 {
     (density_dpi(android_app) as f64 / BASELINE_DPI).max(1.0)
 }
 
+/// Refresh rate of the display the activity is on, in millihertz (`Display.getRefreshRate()`),
+/// advertised to clients as the output mode so nested KWin paces itself to the real display
+/// (120 Hz on many phones) instead of 60 Hz.
+pub fn refresh_rate_mhz(android_app: &AndroidApp) -> Option<i32> {
+    run_in_jvm(
+        |env, app| {
+            let activity = unsafe { JObject::from_raw(app.activity_as_ptr() as *mut _jobject) };
+            let hz = env
+                .call_method(&activity, "getDisplay", "()Landroid/view/Display;", &[])
+                .and_then(|it| it.l())
+                .and_then(|display| env.call_method(display, "getRefreshRate", "()F", &[]))
+                .and_then(|it| it.f());
+            match hz {
+                Ok(hz) if hz > 0.0 => Some((hz * 1000.0).round() as i32),
+                _ => {
+                    let _ = env.exception_clear();
+                    None
+                }
+            }
+        },
+        android_app.clone(),
+    )
+}
+
 /// How far a finger may travel before the gesture counts as a scroll rather than a tap
 /// (`ViewConfiguration.getScaledTouchSlop()`, already in physical pixels).
 pub fn touch_slop_px(android_app: &AndroidApp) -> f64 {

@@ -238,7 +238,8 @@ pub fn bind(event_loop: &ActiveEventLoop) -> Result<WinitGraphicsBackend<GlesRen
         .map_err(|error| format!("Failed to create GLES Renderer: {error}"))?;
     let damage_tracking = display.supports_damage();
 
-    event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+    // Redraws are requested when there is new content (see `wake`); Poll would spin the loop.
+    event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
 
     Ok(WinitGraphicsBackend {
         window: window.clone(),

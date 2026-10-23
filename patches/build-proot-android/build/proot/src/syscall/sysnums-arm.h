@@ -358,4 +358,10 @@ static const Sysnum sysnums_arm[] = {
 	[ 397 ] = PR_statx,
 	[ 439 ] = PR_faccessat2,
 	[ 435 ] = PR_clone3,
+	[ 428 ] = PR_open_tree,
+	[ 429 ] = PR_move_mount,
+	[ 433 ] = PR_fspick,
+	[ 437 ] = PR_openat2,
+	[ 442 ] = PR_mount_setattr,
+	[ 452 ] = PR_fchmodat2,
 };

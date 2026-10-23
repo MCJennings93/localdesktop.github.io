@@ -107,9 +107,13 @@ void translate_syscall(Tracee *tracee)
 
 	assert(tracee->exe != NULL);
 
-	status = fetch_regs(tracee);
-	if (status < 0)
-		return;
+	if (tracee->regs_fresh)
+		tracee->regs_fresh = false;
+	else {
+		status = fetch_regs(tracee);
+		if (status < 0)
+			return;
+	}
 
 	int suppressed_syscall_status = 0;
 
@@ -136,9 +140,16 @@ void translate_syscall(Tracee *tracee)
 		 * requested by the tracee, it is not a syscall
 		 * chained by PRoot.  */
 		if (tracee->chain.syscalls == NULL) {
+			tracee->sysexit_unneeded = false;
 			save_current_regs(tracee, ORIGINAL);
 			status = translate_syscall_enter(tracee);
 			save_current_regs(tracee, MODIFIED);
+
+			if (status >= 0 && tracee->sysexit_unneeded
+			    && tracee->seccomp == ENABLED && !tracee->sysexit_pending
+			    && !tracee->restore_original_regs_after_seccomp_event
+			    && get_sysnum(tracee, MODIFIED) == get_sysnum(tracee, ORIGINAL))
+				tracee->restart_how = PTRACE_CONT;
 		}
 		else {
 			if (tracee->chain.sysnum_workaround_state != SYSNUM_WORKAROUND_PROCESS_REPLACED_CALL) {

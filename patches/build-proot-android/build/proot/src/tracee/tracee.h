@@ -79,9 +79,11 @@ typedef struct tracee {
 
 	/* Link for the list of all tracees.  */
 	LIST_ENTRY(tracee) link;
+	LIST_ENTRY(tracee) bucket_link;
 
 	/* Process identifier. */
 	pid_t pid;
+	pid_t tgid;
 
 	/* Unique tracee identifier. */
 	uint64_t vpid;
@@ -99,6 +101,7 @@ typedef struct tracee {
 
 	/* Parent of this tracee, NULL if none.  */
 	struct tracee *parent;
+	size_t nb_children;
 
 	/* Is it a "clone", i.e has the same parent as its creator.  */
 	bool clone;
@@ -160,6 +163,8 @@ typedef struct tracee {
 	bool _regs_were_changed;
 	bool restore_original_regs;
 	bool restore_original_regs_after_seccomp_event;
+	bool regs_fresh;
+	bool sysexit_unneeded;
 
 	/* State for the special handling of SIGSTOP.  */
 	enum {
@@ -167,6 +172,9 @@ typedef struct tracee {
 		SIGSTOP_ALLOWED,      /* Allow SIGSTOP (once the parent is known).   */
 		SIGSTOP_PENDING,      /* Block SIGSTOP until the parent is unknown.  */
 	} sigstop;
+
+	/* Nonzero only while resolving an ambiguous thread clone at its exit. */
+	word_t pending_clone_flags;
 
 	/* True if next SIGSYS caused by seccomp should be silently dropped
 	 * without affecting state of any registers.  */
@@ -243,6 +251,8 @@ typedef struct tracee {
 	 * has to be ignored as it's same syscall entry */
 	bool seccomp_already_handled_enter;
 
+	word_t robust_list;
+
 	/**********************************************************************
 	 * Shared or private resources, depending on the CLONE_FS/VM flags.   *
 	 **********************************************************************/
@@ -300,10 +310,12 @@ typedef struct tracee {
 #define TRACEE(a) talloc_get_type_abort(talloc_parent(talloc_parent(a)), Tracee)
 
 extern Tracee *get_tracee(const Tracee *tracee, pid_t pid, bool create);
+extern void set_tracee_pid(Tracee *tracee, pid_t pid);
 extern Tracee *get_stopped_ptracee(const Tracee *ptracer, pid_t pid,
 				bool only_with_pevent, word_t wait_options);
 extern bool has_ptracees(const Tracee *ptracer, pid_t pid, word_t wait_options);
 extern int new_child(Tracee *parent, word_t clone_flags);
+extern void finish_pending_child(Tracee *parent);
 extern Tracee *new_dummy_tracee(TALLOC_CTX *context);
 extern void terminate_tracee(Tracee *tracee);
 extern void free_terminated_tracees();

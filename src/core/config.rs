@@ -53,6 +53,18 @@ pub struct LocalConfig {
     /// => So make sure that every config group has a `#[serde(default)]` attribute to avoid invalid sections breaking unrelated parts of the config.
     #[serde(default)]
     pub command: CommandConfig,
+
+    #[serde(default)]
+    pub input: InputConfig,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+pub struct InputConfig {
+    /// Send touches to the session as real `wl_touch` events instead of emulating a mouse.
+    /// For touch-first sessions such as Plasma Mobile, which drag, flick and handle edge swipes
+    /// themselves; mouse emulation suits desktops like Xfce.
+    #[serde(default)]
+    pub native_touch: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

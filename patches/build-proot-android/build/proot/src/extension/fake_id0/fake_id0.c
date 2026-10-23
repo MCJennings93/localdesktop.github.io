@@ -352,6 +352,40 @@ static FilteredSysnum filtered_sysnums[] = {
 	FILTERED_SYSNUM_END,
 };
 
+
+
+
+
+
+
+
+
+
+
+
+static FilteredSysnum identity_sysnums[] = {
+	{ PR_fsetxattr,		FILTER_SYSEXIT },
+	{ PR_lsetxattr,		FILTER_SYSEXIT },
+	{ PR_setfsgid,		FILTER_SYSEXIT },
+	{ PR_setfsgid32,	FILTER_SYSEXIT },
+	{ PR_setfsuid,		FILTER_SYSEXIT },
+	{ PR_setfsuid32,	FILTER_SYSEXIT },
+	{ PR_setgid,		FILTER_SYSEXIT },
+	{ PR_setgid32,		FILTER_SYSEXIT },
+	{ PR_setregid,		FILTER_SYSEXIT },
+	{ PR_setregid32,	FILTER_SYSEXIT },
+	{ PR_setresgid,		FILTER_SYSEXIT },
+	{ PR_setresgid32,	FILTER_SYSEXIT },
+	{ PR_setresuid,		FILTER_SYSEXIT },
+	{ PR_setresuid32,	FILTER_SYSEXIT },
+	{ PR_setreuid,		FILTER_SYSEXIT },
+	{ PR_setreuid32,	FILTER_SYSEXIT },
+	{ PR_setuid,		FILTER_SYSEXIT },
+	{ PR_setuid32,		FILTER_SYSEXIT },
+	{ PR_setxattr,		FILTER_SYSEXIT },
+	FILTERED_SYSNUM_END,
+};
+
 /**
  * Restore the @node->mode for the given @node->path.
  *
@@ -1051,6 +1085,11 @@ static int handle_sysexit_start(Tracee *tracee, Config *config) {
 	if ((int) result < 0 || tracee->status < 0 || sysnum != PR_execve)
 		return 0;
 
+
+
+	if (config->identity)
+		return 0;
+
 	/* This has to be done before PRoot pushes the load
 	 * script into tracee's stack.  */
 	if (!tracee->skip_proot_loader)
@@ -1119,7 +1158,10 @@ int fake_id0_callback(Extension *extension, ExtensionEvent event, intptr_t data1
 			/* Set the umask to the typical linux value. */
 			config->umask = 022;
 
-		extension->filtered_sysnums = filtered_sysnums;
+		config->identity = (uid != 0 && uid == (int) getuid() && gid == (int) getgid());
+		extension->filtered_sysnums = config->identity
+			? identity_sysnums
+			: filtered_sysnums;
 		return 0;
 	}
 

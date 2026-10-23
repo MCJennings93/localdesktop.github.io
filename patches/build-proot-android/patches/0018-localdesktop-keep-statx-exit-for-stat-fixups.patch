@@ -1,0 +1,66 @@
+diff --git a/src/syscall/seccomp.c b/src/syscall/seccomp.c
+index fca220b..31eff2d 100644
+--- a/src/syscall/seccomp.c
++++ b/src/syscall/seccomp.c
+@@ -751,16 +751,42 @@ int enable_syscall_filtering(const Tracee *tracee)
+ 
+ 
+ 
+-static void drop_unneeded_exit_stops(void)
++/* An extension that fixes up stat results (fake_id0's ownership,
++ * link2symlink's link count) sees statx only through its exit stop,
++ * where handle_statx_syscall() emulates it with stat and calls the
++ * extensions back, so the stop stays while one is loaded.  */
++static bool extensions_fix_up_stat(const Tracee *tracee)
++{
++	Extension *extension;
++	size_t i;
++
++	if (tracee == NULL || tracee->extensions == NULL)
++		return false;
++
++	LIST_FOREACH(extension, tracee->extensions, link) {
++		if (extension->filtered_sysnums == NULL)
++			continue;
++		for (i = 0; extension->filtered_sysnums[i].value != PR_void; i++) {
++			if (extension->filtered_sysnums[i].value == PR_newfstatat
++			    && (extension->filtered_sysnums[i].flags & FILTER_SYSEXIT) != 0)
++				return true;
++		}
++	}
++	return false;
++}
++
++static void drop_unneeded_exit_stops(const Tracee *tracee)
+ {
+ 	static bool done = false;
+ 	struct utsname utsname;
+ 	int major, minor;
++	bool keep_statx;
+ 	size_t i;
+ 
+ 	if (done)
+ 		return;
+ 	done = true;
++	keep_statx = extensions_fix_up_stat(tracee);
+ 
+ 	if (uname(&utsname) < 0 || sscanf(utsname.release, "%d.%d", &major, &minor) != 2)
+ 		return;
+@@ -772,7 +798,7 @@ static void drop_unneeded_exit_stops(void)
+ 				proot_sysnums[i].flags &= ~FILTER_SYSEXIT;
+ 			break;
+ 		case PR_statx:
+-			if (major > 5 || (major == 5 && minor >= 8))
++			if (!keep_statx && (major > 5 || (major == 5 && minor >= 8)))
+ 				proot_sysnums[i].flags &= ~FILTER_SYSEXIT;
+ 			break;
+ 		default:
+@@ -787,7 +813,7 @@ static int collect_filtered_sysnums(TALLOC_CTX *context, const Tracee *tracee,
+ 	Extension *extension;
+ 	int status;
+ 
+-	drop_unneeded_exit_stops();
++	drop_unneeded_exit_stops(tracee);
+ 
+ 	/* Add the sysnums required by PRoot to the list of filtered
+ 	 * sysnums.  TODO: only if path translation is required.  */

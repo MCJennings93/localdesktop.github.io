@@ -25,6 +25,7 @@
 #include <linux/net.h>   /* SYS_*, */
 #include <linux/ioctl.h> /* _IOW, */
 #include <string.h>      /* strlen(3), */
+#include <sys/mman.h>    /* PROT_*, */
 
 #include "cli/note.h"
 #include "syscall/syscall.h"
@@ -543,6 +544,23 @@ void translate_syscall_exit(Tracee *tracee)
 	case PR_statx:
 		status = handle_statx_syscall(tracee, false);
 		break;
+
+#ifdef __ANDROID__
+
+
+	case PR_link:
+	case PR_linkat:
+		if ((int) syscall_result == -EACCES)
+			poke_reg(tracee, SYSARG_RESULT, -EPERM);
+		goto end;
+
+	case PR_mprotect:
+		if ((int) syscall_result == -EACCES
+		    && (peek_reg(tracee, ORIGINAL, SYSARG_3) & (PROT_EXEC | PROT_GROWSDOWN))
+			== (PROT_EXEC | PROT_GROWSDOWN))
+			poke_reg(tracee, SYSARG_RESULT, 0);
+		goto end;
+#endif
 
 	case PR_ioctl:
 		if (peek_reg(tracee, ORIGINAL, SYSARG_2) == _IOW(0x94, 9, int) /* FICLONE */ &&

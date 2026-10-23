@@ -6,8 +6,8 @@ use crate::android::{
     backend::{
         pipewire_standalone_aaudio,
         wayland::{
-            bind, centralize, centralize_injected_keyboard, handle, write_guest_output_state,
-            CentralizedEvent, State,
+            bind, centralize, centralize_injected_keyboard, dispatch_clients, flush_clients,
+            handle, write_guest_output_state, CentralizedEvent, State,
         },
         webview::ErrorVariant,
     },
@@ -19,9 +19,7 @@ use crate::android::{
 };
 use crate::core::config;
 use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
-use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::utils::Transform;
-use smithay::wayland::shell::xdg::ToplevelSurface;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
@@ -38,7 +36,6 @@ fn configure_output(backend: &mut crate::android::backend::wayland::WaylandBacke
     // default on the first launch and only becomes accurate after a configuration change.
     let guest_scale_factor = ndk::scale_factor(&backend.android_app);
     backend.guest_scale_factor = guest_scale_factor;
-    backend.compositor.state.size = size.into();
 
     let output = backend
         .compositor
@@ -61,10 +58,12 @@ fn configure_output(backend: &mut crate::android::backend::wayland::WaylandBacke
         backend.compositor.output_global = Some(output.create_global::<State>(&dh));
     }
 
+    let refresh = ndk::refresh_rate_mhz(&backend.android_app).unwrap_or(60000);
+    log::info!("Output mode {}x{} @ {} mHz", size.0, size.1, refresh);
     output.change_current_state(
         Some(Mode {
             size: size.into(),
-            refresh: 60000,
+            refresh,
         }),
         Some(Transform::Normal),
         Some(Scale::Integer(1)),
@@ -74,17 +73,10 @@ fn configure_output(backend: &mut crate::android::backend::wayland::WaylandBacke
     let guest_scale = guest_scale_factor.round().max(1.0) as i32;
     write_guest_output_state(window_size.w, window_size.h, guest_scale);
 
-    for surface in backend.compositor.state.xdg_shell_state.toplevel_surfaces() {
-        configure_toplevel(surface, window_size.w, window_size.h);
-    }
-}
-
-fn configure_toplevel(surface: &ToplevelSurface, width: i32, height: i32) {
-    surface.with_pending_state(|state| {
-        state.size.replace((width, height).into());
-        state.states.set(xdg_toplevel::State::Activated);
-    });
-    surface.send_configure();
+    backend
+        .compositor
+        .state
+        .set_host_geometry(size.into(), guest_scale_factor);
 }
 
 impl ApplicationHandler<AppUserEvent> for PolarBearApp {
@@ -140,11 +132,21 @@ impl ApplicationHandler<AppUserEvent> for PolarBearApp {
         }
     }
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, _event: AppUserEvent) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppUserEvent) {
         let PolarBearBackend::Wayland(backend) = &mut self.backend else {
             accessibility::drain_pending_events();
             return;
         };
+
+        if let AppUserEvent::WaylandReady = event {
+            dispatch_clients(&mut backend.compositor);
+            if backend.compositor.state.needs_redraw {
+                if let Some(winit) = backend.graphic_renderer.as_ref() {
+                    winit.window().request_redraw();
+                }
+            }
+            return;
+        }
 
         for event in accessibility::drain_pending_events() {
             let event = centralize_injected_keyboard(
@@ -155,6 +157,7 @@ impl ApplicationHandler<AppUserEvent> for PolarBearApp {
             );
             handle(event, backend, event_loop);
         }
+        flush_clients(&mut backend.compositor);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -171,11 +174,28 @@ impl ApplicationHandler<AppUserEvent> for PolarBearApp {
                 return;
             }
 
+            // The app only redraws when something changed (see `wake`), so a new window size or
+            // display needs a frame of its own.
+            let window_changed = matches!(
+                event,
+                WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } | WindowEvent::Occluded(false)
+            );
+
             // Map raw events to our own events
             let event = centralize(event, backend);
 
             // Handle the centralized events
             handle(event, backend, event_loop);
+
+            // Input goes out to clients now rather than at the next redraw; a finger held down
+            // keeps redraws going for long-press detection.
+            flush_clients(&mut backend.compositor);
+            if window_changed || !backend.touch_points.is_empty() {
+                backend.compositor.state.needs_redraw = true;
+                if let Some(winit) = backend.graphic_renderer.as_ref() {
+                    winit.window().request_redraw();
+                }
+            }
         }
     }
 

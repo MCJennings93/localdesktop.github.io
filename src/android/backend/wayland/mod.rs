@@ -2,6 +2,8 @@ pub mod bind;
 mod compositor;
 mod event_centralizer;
 mod event_handler;
+mod frame_stats;
+mod wake;
 mod input;
 mod keymap;
 mod output_state;
@@ -11,7 +13,7 @@ pub use output_state::write_guest_output_state;
 
 pub use compositor::{Compositor, State};
 pub use event_centralizer::{centralize, centralize_injected_keyboard, CentralizedEvent};
-pub use event_handler::handle;
+pub use event_handler::{dispatch_clients, flush_clients, handle};
 pub use winit_backend::{bind, WinitGraphicsBackend};
 
 use smithay::{
@@ -23,7 +25,7 @@ use winit::dpi::PhysicalPosition;
 use winit::platform::android::activity::AndroidApp;
 
 /// What the fingers currently on screen are doing, following Android's gesture conventions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TouchMode {
     /// Still within touch slop and the long-press timeout: could become anything.
     Undecided,
@@ -58,6 +60,8 @@ pub struct WaylandBackend {
     pub long_press_timeout_ms: u64,
     /// Whether a synthesized button press is currently held (an in-progress drag).
     pub pointer_pressed: bool,
+    /// Forward touches as `wl_touch` instead of emulating a mouse (`[input] native_touch`).
+    pub native_touch: bool,
 }
 
 impl WaylandBackend {

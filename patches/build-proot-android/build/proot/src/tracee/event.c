@@ -38,6 +38,7 @@
 #include "tracee/event.h"
 #include "tracee/seccomp.h"
 #include "tracee/mem.h"
+#include "tracee/reg.h"
 #include "cli/note.h"
 #include "path/path.h"
 #include "path/binding.h"
@@ -97,6 +98,15 @@ int launch_process(Tracee *tracee, char *const argv[])
 		if (getenv("PROOT_NO_SECCOMP") == NULL)
 			(void) enable_syscall_filtering(tracee);
 
+
+
+
+		if (getenv("PROOT_FASTPATH") != NULL) {
+			char host_cwd[PATH_MAX];
+			if (translate_path(tracee, host_cwd, AT_FDCWD, tracee->fs->cwd, true) >= 0)
+				(void) chdir(host_cwd);
+		}
+
 		/* Now process is ptraced, so the current rootfs is already the
 		 * guest rootfs.  Note: Valgrind can't handle execve(2) on
 		 * "foreign" binaries (ENOEXEC) but can handle execvp(3) on such
@@ -106,7 +116,7 @@ int launch_process(Tracee *tracee, char *const argv[])
 
 	default: /* parent */
 		/* We know the pid of the first tracee now.  */
-		tracee->pid = pid;
+		set_tracee_pid(tracee, pid);
 		return 0;
 	}
 
@@ -388,6 +398,7 @@ int handle_tracee_event(Tracee *tracee, int tracee_status)
 	 * before the exit stage, eg. PTRACE_EVENT_EXEC for the exit
 	 * stage of execve(2).  */
 	sysexit_necessary = tracee->sysexit_pending
+				|| tracee->pending_clone_flags != 0
 				|| tracee->chain.syscalls != NULL
 				|| tracee->restore_original_regs_after_seccomp_event;
 	/* Don't overwrite restart_how if it is explicitly set
@@ -464,6 +475,9 @@ int handle_tracee_event(Tracee *tracee, int tracee_status)
 			/* Fall through. */
 		case SIGTRAP | 0x80:
 			signal = 0;
+
+			if (tracee->pending_clone_flags != 0)
+				finish_pending_child(tracee);
 
 			/* This tracee got signaled then freed during the
 			   sysenter stage but the kernel reports the sysexit
@@ -576,18 +590,20 @@ int handle_tracee_event(Tracee *tracee, int tracee_status)
 			if (tracee->seccomp != ENABLED)
 				break;
 
-			status = ptrace(PTRACE_GETEVENTMSG, tracee->pid, NULL, &flags);
+			status = fetch_regs(tracee);
 			if (status < 0)
 				break;
+			tracee->regs_fresh = true;
+			flags = filtered_sysnum_flags(tracee, get_sysnum(tracee, CURRENT));
 
 			/* Use the common ptrace flow when
 			 * sysexit has to be handled.  */
 			if ((flags & FILTER_SYSEXIT) != 0 || sysexit_necessary) {
-				if (seccomp_after_ptrace_enter) {
-					tracee->restart_how = PTRACE_SYSCALL;
-					translate_syscall(tracee);
-				}
 				tracee->restart_how = PTRACE_SYSCALL;
+				if (seccomp_after_ptrace_enter)
+					translate_syscall(tracee);
+				else
+					tracee->regs_fresh = false;
 				break;
 			}
 
@@ -720,6 +736,7 @@ bool restart_tracee(Tracee *tracee, int signal)
 
 	tracee->last_restart_how = tracee->restart_how;
 	tracee->restart_how = 0;
+	tracee->regs_fresh = false;
 	tracee->running = true;
 
 	return true;

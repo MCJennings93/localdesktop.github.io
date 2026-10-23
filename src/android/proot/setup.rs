@@ -1284,6 +1284,7 @@ pub fn setup(android_app: AndroidApp) -> PolarBearBackend {
             touch_slop_px: touch_slop_px(&android_app),
             long_press_timeout_ms: long_press_timeout_ms(&android_app),
             pointer_pressed: false,
+            native_touch: get_application_context().local_config.input.native_touch,
             android_app,
         })
     } else {

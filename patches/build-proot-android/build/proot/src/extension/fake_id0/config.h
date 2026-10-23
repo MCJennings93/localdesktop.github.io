@@ -2,6 +2,7 @@
 #define FAKE_ID0_CONFIG_H
 
 #include <sys/types.h>   /* uid_t, gid_t */
+#include <stdbool.h>
 
 typedef struct {
 	uid_t ruid;
@@ -15,6 +16,10 @@ typedef struct {
 	gid_t fsgid;
 
 	mode_t umask;
+
+
+
+	bool identity;
 } Config;
 
 #endif /* FAKE_ID0_CONFIG_H */

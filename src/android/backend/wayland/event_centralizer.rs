@@ -35,6 +35,14 @@ pub enum CentralizedEvent {
     /// A redraw was requested
     Redraw,
 
+    /// A raw touch, forwarded as-is when `native_touch` is on. `location` is in window pixels.
+    NativeTouch {
+        phase: TouchPhase,
+        id: u64,
+        location: PhysicalPosition<f64>,
+        time: u64,
+    },
+
     /// TODO: Support these events
     Unsupported,
 }
@@ -136,6 +144,14 @@ pub fn centralize(event: WindowEvent, backend: &mut WaylandBackend) -> Centraliz
             };
             CentralizedEvent::Input(event)
         }
+        WindowEvent::Touch(Touch {
+            phase, location, id, ..
+        }) if backend.native_touch => CentralizedEvent::NativeTouch {
+            phase,
+            id,
+            location,
+            time,
+        },
         WindowEvent::Touch(Touch {
             phase: TouchPhase::Started,
             location,
@@ -257,9 +273,10 @@ pub fn centralize(event: WindowEvent, backend: &mut WaylandBackend) -> Centraliz
                 return CentralizedEvent::Unsupported;
             }
 
+            let mode = backend.touch_mode;
             backend.reset_touch_state();
             CentralizedEvent::Input(InputEvent::TouchCancel {
-                event: WinitTouchCancelledEvent { time, id },
+                event: WinitTouchCancelledEvent { time, id, mode },
             })
         }
 

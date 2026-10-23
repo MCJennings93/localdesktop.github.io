@@ -559,6 +559,24 @@ static int handle_seccomp_event_common(Tracee *tracee)
 	}
 
 	case PR_set_robust_list:
+		tracee->robust_list = peek_reg(tracee, CURRENT, SYSARG_1);
+		set_result_after_seccomp(tracee, -ENOSYS);
+		break;
+
+	case PR_get_robust_list:
+	{
+		pid_t pid = (pid_t) peek_reg(tracee, CURRENT, SYSARG_1);
+		if (tracee->robust_list == 0 || (pid != 0 && pid != tracee->pid)) {
+			set_result_after_seccomp(tracee, -ENOSYS);
+			break;
+		}
+		poke_word(tracee, peek_reg(tracee, CURRENT, SYSARG_2), tracee->robust_list);
+		if (errno == 0)
+			poke_word(tracee, peek_reg(tracee, CURRENT, SYSARG_3), 3 * sizeof_word(tracee));
+		set_result_after_seccomp(tracee, errno != 0 ? -EFAULT : 0);
+		break;
+	}
+
 	default:
 		/* Set errno to -ENOSYS */
 		set_result_after_seccomp(tracee, -ENOSYS);

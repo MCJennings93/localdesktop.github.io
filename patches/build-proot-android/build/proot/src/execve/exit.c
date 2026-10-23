@@ -478,6 +478,8 @@ void translate_execve_exit(Tracee *tracee)
 		talloc_set_name_const(tracee->exe, "$exe");
 	}
 
+	tracee->robust_list = 0;
+
 	/* New processes have no heap.  */
 	if (talloc_reference_count(tracee->heap) >= 1) {
 		talloc_unlink(tracee, tracee->heap);
