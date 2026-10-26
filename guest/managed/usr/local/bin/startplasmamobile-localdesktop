@@ -1,0 +1,112 @@
+#!/bin/sh
+# Plasma Mobile session for Local Desktop: KWin (socket wayland-2) nests fullscreen on the app's
+# compositor (wayland-0) and runs the mobile plasmashell. If KWin dies within 30 s the session
+# retries through a bare labwc, then falls back to Xfce. Replaces startplasmamobile, whose
+# systemd- and portal-driven startup stalls under proot. It is the default `launch` command
+# (see /etc/localdesktop/localdesktop.toml to choose another session).
+#
+# Managed by the Local Desktop app: it is rewritten on every app start, so local edits are lost.
+#
+# Switches, as files in /etc/localdesktop/:
+#   kwin-qpainter  KWin composites on the CPU (QPainter) instead of OpenGL.
+#   test-runner    Run scripts dropped into /tmp/ld-run inside the session (for work over adb).
+#   dev-keep-managed  The app leaves the managed files (like this one) alone at start, so edited
+#                  copies can be tested; delete it to go back to the app's versions.
+LOG=/tmp/plasma-mobile-session.log
+exec >"$LOG" 2>&1
+echo "== $(date) starting Plasma Mobile"
+
+export HOME="${HOME:-/root}"
+export XDG_RUNTIME_DIR=/tmp WAYLAND_DISPLAY=wayland-0 XDG_SESSION_TYPE=wayland
+export XDG_CURRENT_DESKTOP=KDE KDE_FULL_SESSION=true KDE_SESSION_VERSION=6
+export PIPEWIRE_RUNTIME_DIR=/tmp PULSE_SERVER=unix:/tmp/pulse/native
+export QT_QPA_PLATFORMTHEME=kde QT_QUICK_CONTROLS_STYLE=org.kde.breeze QT_QUICK_CONTROLS_MOBILE=true
+export PLASMA_PLATFORM=phone:handset QT_ENABLE_GLYPH_CACHE_WORKAROUND=1
+export XDG_CONFIG_DIRS="$HOME/.config/plasma-mobile:/etc/xdg"
+export QTWEBENGINE_DISABLE_SANDBOX=1 ELECTRON_DISABLE_SANDBOX=1
+export XCURSOR_THEME=breeze_cursors XCURSOR_SIZE=24
+
+# GPU OpenGL for the shell and apps: Zink on Turnip, Mesa's Adreno Vulkan driver built with
+# the KGSL backend in /opt/turnip-kgsl. See /usr/local/src/zink-kopper-shim.c for why
+# LIBGL_ALWAYS_SOFTWARE is set and hidden from Zink. MESA_VK_WSI_DEBUG=sw copies finished frames
+# into wl_shm buffers; with KWin on OpenGL, clients present dmabufs instead (see
+# localdesktop-plasma-mobile-shell). Without Turnip, Qt Quick uses Mesa llvmpipe (CPU). (The app
+# binds a /proc/cpuinfo that keeps llvmpipe's LLVM off SVE, which this SoC has disabled.)
+TURNIP_ICD=/opt/turnip-kgsl/share/vulkan/icd.d/freedreno_icd.aarch64.json
+ZINK_SHIM=/usr/local/lib/zink-kopper-shim.so
+GPU_PRELOAD=
+if [ -r "$TURNIP_ICD" ] && [ -r "$ZINK_SHIM" ]; then
+    export VK_ICD_FILENAMES="$TURNIP_ICD" MESA_VK_WSI_DEBUG=sw
+    export MESA_LOADER_DRIVER_OVERRIDE=zink LIBGL_ALWAYS_SOFTWARE=1
+    GPU_PRELOAD=" $ZINK_SHIM"
+    # Every program, not only KWin: Chromium aborts on the fake /dev/dri/renderD0 unless
+    # kgsl-drm-shim answers it (see /usr/local/src/kgsl-drm-shim.c).
+    [ -r /usr/local/lib/kgsl-drm-shim.so ] && GPU_PRELOAD="$GPU_PRELOAD /usr/local/lib/kgsl-drm-shim.so"
+fi
+# KWin composites on the CPU unless kwin-localdesktop-gl takes over below.
+export KWIN_COMPOSE=Q
+# Qt logs to journald otherwise, so errors would vanish.
+export QT_FORCE_STDERR_LOGGING=1
+# Android blocks uevent netlink sockets; without this KWin 6.7 crashes in GpuManager.
+# segvbt prints a backtrace on crashes (gdb/strace cannot attach under proot).
+export LD_PRELOAD="/usr/local/lib/udev-netlink-shim.so /usr/local/lib/segvbt.so$GPU_PRELOAD"
+unset DISPLAY
+
+rm -f /tmp/wayland-2 /tmp/wayland-2.lock
+
+# The app publishes its window mode and the guest scale here (written by the Android side).
+LOCALDESKTOP_OUTPUT_SCALE=3
+[ -r /tmp/localdesktop-output ] && . /tmp/localdesktop-output
+# OpenGL compositing for KWin (see /usr/local/bin/kwin-localdesktop-gl) when the GPU is set up:
+# the app shows the GPU as /dev/dri/renderD0, and Turnip and the shims are installed.
+KWIN_BIN=kwin_wayland
+if [ ! -e /etc/localdesktop/kwin-qpainter ] && [ -c /dev/dri/renderD0 ] && [ -n "$GPU_PRELOAD" ] \
+    && [ -r /usr/local/lib/kgsl-drm-shim.so ]; then
+    KWIN_BIN=kwin-localdesktop-gl
+fi
+echo "== KWin: $KWIN_BIN"
+KWIN="$KWIN_BIN --socket wayland-2 --fullscreen=true --xwayland --no-lockscreen --inputmethod /usr/bin/plasma-keyboard"
+SHELL_CMD=/usr/local/bin/localdesktop-plasma-mobile-shell
+
+# Runs a session command; succeeds if it lasted at least 30 s (i.e. didn't fail at startup).
+run_session() {
+    started=$(date +%s)
+    "$@"
+    status=$?
+    [ $(( $(date +%s) - started )) -ge 30 ] && exit $status
+    echo "== $(date) session exited early (status $status): $*"
+}
+
+# Test runner for work over adb: ld-exec runs under run-as, whose SELinux domain may not
+# use the GPU. Scripts dropped into /tmp/ld-run run here, in the app's own domain and with
+# this session's environment; output goes to <name>.log, then <name>.done appears.
+if [ -e /etc/localdesktop/test-runner ]; then
+    mkdir -p /tmp/ld-run
+    (
+        while sleep 1; do
+            for f in /tmp/ld-run/*.sh; do
+                [ -f "$f" ] || continue
+                mv -f "$f" "$f.running" || continue
+                ( WAYLAND_DISPLAY=wayland-2 sh "$f.running" >"${f%.sh}.log" 2>&1; echo $? >"${f%.sh}.done"; rm -f "$f.running" ) &
+            done
+        done
+    ) &
+fi
+
+echo "== direct KWin on wayland-0, scale $LOCALDESKTOP_OUTPUT_SCALE"
+# D-Bus-activated services (portals) must join KWin (wayland-2), not the app compositor.
+# --scale only covers the first frame: nested KWin then follows the app's wp_fractional_scale,
+# which tracks the Android display density across rotation, fold/unfold and display changes.
+run_session dbus-run-session -- sh -c "dbus-update-activation-environment WAYLAND_DISPLAY=wayland-2; exec $KWIN --scale $LOCALDESKTOP_OUTPUT_SCALE $SHELL_CMD"
+
+# labwc reuses the app's output scale via localdesktop-wlroots-output, so KWin runs at scale 1
+# inside it; labwc is told to exit when KWin does so a dead KWin is noticed.
+echo "== retrying through labwc"
+rm -f /tmp/wayland-2 /tmp/wayland-2.lock
+run_session dbus-run-session -- labwc --config-dir "$HOME/.config/labwc-plasma" \
+    --startup "sh -c 'dbus-update-activation-environment WAYLAND_DISPLAY=wayland-2; $KWIN $SHELL_CMD; labwc --exit'"
+
+echo "== $(date) Plasma Mobile failed to start; falling back to Xfce"
+unset LD_PRELOAD KWIN_COMPOSE XDG_CONFIG_DIRS PLASMA_PLATFORM QT_QUICK_CONTROLS_MOBILE MESA_LOADER_DRIVER_OVERRIDE LIBGL_ALWAYS_SOFTWARE MESA_VK_WSI_DEBUG
+export XDG_CURRENT_DESKTOP=XFCE QT_QUICK_CONTROLS_MOBILE=1
+exec /usr/local/bin/startxfce4-localdesktop

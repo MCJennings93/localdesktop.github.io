@@ -1218,6 +1218,13 @@ impl ImportDmaWl for GlesRenderer {
 #[cfg(feature = "wayland_frontend")]
 struct DmabufCopyCache(HashMap<usize, Arc<GlesTextureInternal>>);
 
+/// Local Desktop diagnostics: when set, called with each dmabuf mapped by
+/// `import_dmabuf_by_copy` (the mapped pixels from the buffer offset, stride, width, height,
+/// format) before its upload, e.g. to look for frames a client handed over unfinished.
+pub static DMABUF_COPY_PROBE: std::sync::OnceLock<
+    fn(&[u8], usize, i32, i32, crate::backend::allocator::Fourcc),
+> = std::sync::OnceLock::new();
+
 impl GlesRenderer {
     /// Upload a linear, single-plane dmabuf through a CPU mapping (Local Desktop, see
     /// `import_dmabuf`). Like shm buffers, a surface keeps one texture whatever buffer it
@@ -1319,6 +1326,10 @@ impl GlesRenderer {
         let ptr = unsafe { libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ, libc::MAP_SHARED, raw, 0) };
         if ptr == libc::MAP_FAILED {
             return Err(GlesError::UnsupportedPixelLayout);
+        }
+        if let Some(probe) = DMABUF_COPY_PROBE.get() {
+            let pixels = unsafe { slice::from_raw_parts((ptr as *const u8).add(offset), stride * height as usize) };
+            probe(pixels, stride, width, height, format.code);
         }
         let result = (|| {
             let mut sync_lock = texture.0.sync.write().unwrap();

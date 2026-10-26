@@ -1,0 +1,18 @@
+#!/bin/sh
+# Started by KWin in startplasmamobile-localdesktop, so WAYLAND_DISPLAY/DISPLAY point at KWin here.
+# D-Bus-activated services (portals, kded modules) must see KWin's sockets, not the app's.
+# KWin may run with OpenGL settings (kwin-localdesktop-gl); give clients back theirs.
+# MESA_VK_WSI_DEBUG stays unset (kwin-localdesktop-gl unsets it), so Zink hands KWin its frames as
+# dmabufs instead of copying them into wl_shm on the CPU (~30% less CPU for a GL client). That is
+# safe without fences for clients that draw and commit in the same process, as Mesa does: KGSL runs
+# GPU work in submission order, so KWin's read lands after the draw (2026-10-23 synctest: 0 partly
+# drawn frames in 780 deliberately slow ones). Chromium commits from another process than it draws
+# in, so it still races (garbage after Android overlays) until explicit sync exists.
+if [ "$LOCALDESKTOP_KWIN_GL" = 1 ]; then
+    export LIBGL_ALWAYS_SOFTWARE=1
+    unset KWIN_COMPOSE KWIN_RENDER_NODES LOCALDESKTOP_KWIN_GL
+fi
+dbus-update-activation-environment --all
+QT_QPA_PLATFORM=offscreen plasma-mobile-envmanager --apply-settings
+kded6 &
+exec plasmashell -p org.kde.plasma.mobileshell

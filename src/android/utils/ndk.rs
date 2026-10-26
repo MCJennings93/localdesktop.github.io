@@ -1,4 +1,4 @@
-use jni::objects::{JObject, JValue};
+use jni::objects::{JObject, JString, JValue};
 use jni::sys::{JNIInvokeInterface_, _jobject};
 use jni::{JNIEnv, JavaVM};
 use winit::platform::android::activity::AndroidApp;
@@ -87,6 +87,69 @@ pub fn refresh_rate_mhz(android_app: &AndroidApp) -> Option<i32> {
                     None
                 }
             }
+        },
+        android_app.clone(),
+    )
+}
+
+/// The DNS servers of Android's active network (`ConnectivityManager.getLinkProperties`, which
+/// follows a VPN when one is up), as numeric addresses. Empty if there is no network or the
+/// lookup fails.
+pub fn dns_servers(android_app: &AndroidApp) -> Vec<String> {
+    fn lookup(env: &mut JNIEnv, activity: &JObject) -> jni::errors::Result<Vec<String>> {
+        let service = env.new_string("connectivity")?;
+        let manager = env
+            .call_method(
+                activity,
+                "getSystemService",
+                "(Ljava/lang/String;)Ljava/lang/Object;",
+                &[JValue::Object(&service)],
+            )?
+            .l()?;
+        if manager.is_null() {
+            return Ok(Vec::new());
+        }
+        let network = env
+            .call_method(&manager, "getActiveNetwork", "()Landroid/net/Network;", &[])?
+            .l()?;
+        if network.is_null() {
+            return Ok(Vec::new());
+        }
+        let properties = env
+            .call_method(
+                &manager,
+                "getLinkProperties",
+                "(Landroid/net/Network;)Landroid/net/LinkProperties;",
+                &[JValue::Object(&network)],
+            )?
+            .l()?;
+        if properties.is_null() {
+            return Ok(Vec::new());
+        }
+        let list = env
+            .call_method(&properties, "getDnsServers", "()Ljava/util/List;", &[])?
+            .l()?;
+        let count = env.call_method(&list, "size", "()I", &[])?.i()?;
+        let mut servers = Vec::new();
+        for i in 0..count {
+            let address = env
+                .call_method(&list, "get", "(I)Ljava/lang/Object;", &[JValue::Int(i)])?
+                .l()?;
+            let host = env
+                .call_method(&address, "getHostAddress", "()Ljava/lang/String;", &[])?
+                .l()?;
+            servers.push(env.get_string(&JString::from(host))?.into());
+        }
+        Ok(servers)
+    }
+
+    run_in_jvm(
+        |env, app| {
+            let activity = unsafe { JObject::from_raw(app.activity_as_ptr() as *mut _jobject) };
+            lookup(env, &activity).unwrap_or_else(|_| {
+                let _ = env.exception_clear();
+                Vec::new()
+            })
         },
         android_app.clone(),
     )

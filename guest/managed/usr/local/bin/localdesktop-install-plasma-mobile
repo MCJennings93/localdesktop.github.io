@@ -1,0 +1,53 @@
+#!/bin/sh
+# Switches Local Desktop from Xfce to Plasma Mobile: installs the KDE packages, optionally Brave
+# Origin Nightly, and points /etc/localdesktop/localdesktop.toml at the Plasma Mobile session.
+# Run it once in the Xfce terminal, then restart the app. The session scripts, GPU driver (Turnip
+# with the KGSL backend in /opt/turnip-kgsl) and shims it uses are put in place by the app itself.
+#
+#   localdesktop-install-plasma-mobile [brave-origin-nightly-bin-*.pkg.tar.zst]
+#
+# Brave comes from the AUR (brave-origin-nightly-bin), which can't be built inside proot yet
+# (makepkg's cp -a trips over proot's .proot-meta-file entries). Build it on a PC instead
+# (docker run archlinux, base-devel, CARCH=aarch64, makepkg --nodeps), copy the package to the
+# phone, and pass its path here. Without an argument, a copy in the pacman cache is used if found.
+#
+# Managed by the Local Desktop app: it is rewritten on every app start, so local edits are lost.
+set -eu
+
+PACKAGES="plasma-mobile plasma-nano plasma-settings plasma-keyboard plasma-integration
+    breeze breeze-gtk breeze-icons qqc2-breeze-style kde-gtk-config qt6-wayland qt6ct
+    angelfish index-fm kasts kclock koko kweather qmlkonsole
+    noto-fonts-emoji vulkan-icd-loader vulkan-tools mesa-utils"
+CONFIG=/etc/localdesktop/localdesktop.toml
+
+echo "== Installing Plasma Mobile packages"
+# shellcheck disable=SC2086 # word splitting of the package list is intended
+pacman -Syu --needed --noconfirm $PACKAGES
+
+BRAVE_PKG=${1:-}
+if [ -z "$BRAVE_PKG" ]; then
+    BRAVE_PKG=$(ls /var/cache/pacman/pkg/brave-origin-nightly-bin-*-aarch64.pkg.tar.zst 2>/dev/null | tail -n 1 || true)
+fi
+if [ -n "$BRAVE_PKG" ]; then
+    echo "== Installing Brave Origin Nightly from $BRAVE_PKG"
+    pacman -U --needed --noconfirm "$BRAVE_PKG"
+else
+    echo "== Skipping Brave Origin Nightly: no package given (see the comment at the top of $0)"
+fi
+
+echo "== Selecting the Plasma Mobile session in $CONFIG"
+mkdir -p /etc/localdesktop
+[ -e "$CONFIG" ] && cp "$CONFIG" "$CONFIG.before-plasma-mobile"
+cat > "$CONFIG" <<'EOF'
+# Local Desktop session overrides (read by the app at startup).
+# Written by localdesktop-install-plasma-mobile; the previous file is kept as
+# localdesktop.toml.before-plasma-mobile. Delete this file to go back to the app's Xfce default.
+[command]
+# Plasma Mobile (KWin + mobile shell); see /usr/local/bin/startplasmamobile-localdesktop.
+launch = "/usr/local/bin/startplasmamobile-localdesktop"
+
+[input]
+# Plasma Mobile is touch-first: send real touches (drag, flick, edge swipes) instead of mouse emulation.
+native_touch = true
+EOF
+echo "== Done. Restart Local Desktop to start Plasma Mobile."

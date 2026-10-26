@@ -1,0 +1,38 @@
+#!/bin/sh
+# Applies the KDE/postmarketOS look to the Xfce session on every login. Lives outside the
+# app-managed files: the app rewrites xsettings.xml and the labwc config on each launch.
+WALLPAPER=${WALLPAPER:-/usr/share/wallpapers/postmarketOS-2026-basin/contents/images/2000x2000.png}
+
+for _ in $(seq 1 50); do
+    xfconf-query -c xsettings -lv >/dev/null 2>&1 && break
+    sleep 0.1
+done
+
+setx() { xfconf-query -c xsettings -p "$1" -n -t "$2" -s "$3" 2>/dev/null || xfconf-query -c xsettings -p "$1" -s "$3"; }
+setx /Net/ThemeName string Breeze-Dark
+setx /Net/IconThemeName string breeze-dark
+setx /Gtk/CursorThemeName string breeze_cursors
+setx /Gtk/CursorThemeSize int 24
+setx /Gtk/FontName string "Noto Sans 10"
+setx /Gtk/MonospaceFontName string "Hack 10"
+# GTK4/libadwaita and portal-aware apps read the dark preference from GSettings, not xsettings.
+gsettings set org.gnome.desktop.interface color-scheme prefer-dark 2>/dev/null
+gsettings set org.gnome.desktop.interface gtk-theme Breeze-Dark 2>/dev/null
+
+# The dock's "intelligent" autohide needs window geometry labwc doesn't expose, so it never
+# hides and never reserves space; windows end up underneath it. Keep it shown with a strut.
+xfconf-query -c xfce4-panel -p /panels/panel-2/autohide-behavior -s 0 2>/dev/null
+
+# xfdesktop keys backdrops by output name, which only exists once the compositor is up.
+for _ in $(seq 1 50); do
+    outputs=$(wlr-randr 2>/dev/null | awk '/^[^ ]/{print $1}')
+    [ -n "$outputs" ] && break
+    sleep 0.2
+done
+for out in $outputs; do
+    base=/backdrop/screen0/monitor$out/workspace0
+    xfconf-query -c xfce4-desktop -p $base/last-image -n -t string -s "$WALLPAPER" 2>/dev/null || \
+        xfconf-query -c xfce4-desktop -p $base/last-image -s "$WALLPAPER"
+    xfconf-query -c xfce4-desktop -p $base/image-style -n -t int -s 5 2>/dev/null || \
+        xfconf-query -c xfce4-desktop -p $base/image-style -s 5
+done

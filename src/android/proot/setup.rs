@@ -7,7 +7,9 @@ use crate::{
             webview::{ErrorVariant, WebviewBackend},
         },
         utils::application_context::get_application_context,
-        utils::ndk::{density_dpi, long_press_timeout_ms, scale_factor, touch_slop_px},
+        utils::ndk::{
+            density_dpi, dns_servers, long_press_timeout_ms, scale_factor, touch_slop_px,
+        },
     },
     core::config::{
         CommandConfig, ARCH_FS_ARCHIVE, ARCH_FS_ROOT, DOCS_HOME_URL, PIPEWIRE_GUEST_RUNTIME_DIR,
@@ -17,6 +19,7 @@ use crate::{
 use pathdiff::diff_paths;
 use smithay::utils::Clock;
 use std::{
+    ffi::CString,
     fs::{self, File},
     io::{ErrorKind, Read, Write},
     os::unix::fs::{symlink, PermissionsExt},
@@ -1165,6 +1168,162 @@ fn fix_xkb_symlink(options: &SetupOptions) -> StageOutput {
     None
 }
 
+/// Guest files that ship with the app: `guest/` in the repo, packed by guest/build-overlay.sh.
+const GUEST_OVERLAY_ASSET: &str = "guest-overlay.tar";
+/// Mesa Turnip built with the KGSL backend (the Adreno driver behind Zink), for /opt/turnip-kgsl.
+const TURNIP_ASSET: &str = "turnip-kgsl.tar.xz";
+const TURNIP_DIR: &str = "opt/turnip-kgsl";
+/// Resolvers for when Android reports none: IPv6 first, because on 2026-10-23 the carrier
+/// refused IPv4 connections to these public resolvers.
+const FALLBACK_DNS_SERVERS: &[&str] = &["2606:4700:4700::1111", "2001:4860:4860::8888", "1.1.1.1"];
+
+/// Installs the guest files shipped in the APK on every start. Files under `managed/` are
+/// rewritten whenever they differ, so app updates reach them; files under `seed/` are written
+/// only when missing, so user edits stick. Turnip is unpacked again when the shipped build
+/// changes, and /etc/resolv.conf follows Android's DNS servers.
+fn setup_guest_overlay(options: &SetupOptions) -> StageOutput {
+    let fs_root = Path::new(ARCH_FS_ROOT);
+    match read_asset(&options.android_app, GUEST_OVERLAY_ASSET)
+        .and_then(|overlay| install_guest_overlay(fs_root, &overlay, &options.android_app))
+    {
+        Ok(()) => {}
+        Err(error) => log::error!("Failed to install the guest overlay: {error}"),
+    }
+    write_resolv_conf(fs_root, &dns_servers(&options.android_app));
+    None
+}
+
+fn read_asset(android_app: &AndroidApp, name: &str) -> std::io::Result<Vec<u8>> {
+    let c_name = CString::new(name).map_err(std::io::Error::other)?;
+    let mut asset = android_app.asset_manager().open(&c_name).ok_or_else(|| {
+        std::io::Error::new(ErrorKind::NotFound, format!("missing Android asset {name}"))
+    })?;
+    let mut bytes = Vec::with_capacity(asset.length());
+    asset.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+fn install_guest_overlay(
+    fs_root: &Path,
+    overlay: &[u8],
+    android_app: &AndroidApp,
+) -> std::io::Result<()> {
+    // For testing edited guest files on the device: leave the managed ones alone.
+    let keep_managed = fs_root.join("etc/localdesktop/dev-keep-managed").exists();
+    if keep_managed {
+        log::warn!("Guest overlay: /etc/localdesktop/dev-keep-managed exists, managed files left as they are");
+    }
+    let mut turnip_sha256 = None;
+    let mut written = 0;
+    for entry in Archive::new(overlay).entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.into_owned();
+        if path == Path::new("turnip-kgsl.sha256") {
+            let mut sha256 = String::new();
+            entry.read_to_string(&mut sha256)?;
+            turnip_sha256 = Some(sha256.trim().to_string());
+            continue;
+        }
+        let (managed, relative) = if let Ok(relative) = path.strip_prefix("managed") {
+            (true, relative)
+        } else if let Ok(relative) = path.strip_prefix("seed") {
+            (false, relative)
+        } else {
+            continue;
+        };
+        if relative.as_os_str().is_empty() {
+            continue;
+        }
+        let dest = fs_root.join(relative);
+        if entry.header().entry_type().is_dir() {
+            fs::create_dir_all(&dest)?;
+            continue;
+        }
+        if (managed && keep_managed) || (!managed && dest.symlink_metadata().is_ok()) {
+            continue;
+        }
+        let mode = entry.header().mode()?;
+        let mut content = Vec::new();
+        entry.read_to_end(&mut content)?;
+        if managed && fs::read(&dest).is_ok_and(|old| old == content) {
+            fs::set_permissions(&dest, fs::Permissions::from_mode(mode))?;
+            continue;
+        }
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        // Write beside and rename, so a running program keeps its old copy of a replaced
+        // shim or script instead of seeing a half-written file.
+        let staging = dest.with_file_name(format!(
+            ".{}.localdesktop-new",
+            dest.file_name().unwrap_or_default().to_string_lossy()
+        ));
+        fs::write(&staging, &content)?;
+        fs::set_permissions(&staging, fs::Permissions::from_mode(mode))?;
+        fs::rename(&staging, &dest)?;
+        written += 1;
+    }
+    log::info!("Guest overlay: {written} files written");
+    if let Some(sha256) = turnip_sha256 {
+        install_turnip(fs_root, &sha256, android_app)?;
+    }
+    Ok(())
+}
+
+fn install_turnip(fs_root: &Path, sha256: &str, android_app: &AndroidApp) -> std::io::Result<()> {
+    let dir = fs_root.join(TURNIP_DIR);
+    let stamp = dir.join(".localdesktop-sha256");
+    if fs::read_to_string(&stamp).is_ok_and(|installed| installed.trim() == sha256) {
+        return Ok(());
+    }
+    let archive = read_asset(android_app, TURNIP_ASSET)?;
+    // The archive holds opt/turnip-kgsl/...; unpack it aside, then swap it in whole.
+    let staging = fs_root.join("opt/.turnip-kgsl.localdesktop-new");
+    let _ = fs::remove_dir_all(&staging);
+    Archive::new(XzDecoder::new(archive.as_slice())).unpack(&staging)?;
+    let unpacked = staging.join(TURNIP_DIR);
+    fs::write(unpacked.join(".localdesktop-sha256"), sha256)?;
+    let old = fs_root.join("opt/.turnip-kgsl.localdesktop-old");
+    let _ = fs::remove_dir_all(&old);
+    if dir.exists() {
+        fs::rename(&dir, &old)?;
+    }
+    fs::rename(&unpacked, &dir)?;
+    let _ = fs::remove_dir_all(&old);
+    let _ = fs::remove_dir_all(&staging);
+    log::info!("Installed Turnip (sha256 {sha256}) in /{TURNIP_DIR}");
+    Ok(())
+}
+
+/// The guest uses glibc's resolver, which knows nothing of Android's (netd), so it gets the
+/// active network's servers written out; glibc reads at most three.
+fn write_resolv_conf(fs_root: &Path, android_servers: &[String]) {
+    if fs_root.join("etc/localdesktop/keep-resolv-conf").exists() {
+        return;
+    }
+    let (source, servers): (&str, Vec<&str>) = if android_servers.is_empty() {
+        ("built-in fallback", FALLBACK_DNS_SERVERS.to_vec())
+    } else {
+        ("Android's", android_servers.iter().map(String::as_str).collect())
+    };
+    let mut content = format!(
+        "# Written by Local Desktop at every start from {source} DNS servers.\n\
+         # To manage this file yourself, create /etc/localdesktop/keep-resolv-conf.\n"
+    );
+    for server in servers.iter().take(3) {
+        content.push_str(&format!("nameserver {server}\n"));
+    }
+    content.push_str("options timeout:2 attempts:2\n");
+    let path = fs_root.join("etc/resolv.conf");
+    if fs::read_to_string(&path).is_ok_and(|old| old == content) {
+        return;
+    }
+    match fs::write(&path, &content) {
+        Ok(()) => log::info!("Wrote /etc/resolv.conf from {source} DNS servers: {servers:?}"),
+        Err(error) => log::error!("Failed to write {}: {error}", path.display()),
+    }
+}
+
 pub fn setup(android_app: AndroidApp) -> PolarBearBackend {
     let (sender, receiver) = mpsc::channel();
     let progress = Arc::new(Mutex::new(0));
@@ -1201,6 +1360,7 @@ pub fn setup(android_app: AndroidApp) -> PolarBearBackend {
         Box::new(setup_onboard_signal_fix), // Step 9. Wrap Onboard to survive proot fstat/signal.set_wakeup_fd failure
         Box::new(setup_xfce_wayland),       // Step 10. Setup Xfce Wayland launch and HiDPI scaling
         Box::new(fix_xkb_symlink),          // Step 11. Fix xkb symlink
+        Box::new(setup_guest_overlay), // Step 12. Install shipped guest files (Plasma Mobile session, GPU shims, Turnip) and DNS
     ];
 
     let handle_stage_error = |e: Box<dyn std::any::Any + Send>, sender: &Sender<SetupMessage>| {

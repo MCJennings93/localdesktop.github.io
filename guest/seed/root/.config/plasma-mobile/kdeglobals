@@ -1,0 +1,5 @@
+[General]
+BrowserApplication=angelfish
+
+[KDE]
+LookAndFeelPackage[$i]=org.kde.breeze.mobile

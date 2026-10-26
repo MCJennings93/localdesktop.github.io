@@ -1,0 +1,10 @@
+#!/bin/sh
+# KWin with OpenGL compositing (Zink on Turnip/KGSL) for startplasmamobile-localdesktop, used
+# unless /etc/localdesktop/kwin-qpainter exists. The app shows /dev/kgsl-3d0 as /dev/dri/renderD0
+# and offers linux-dmabuf naming it, so KWin's nested backend gets a render device;
+# kgsl-drm-shim.so (after DroidDeck's drm.c, preloaded for the whole session) emulates the PRIME
+# handles KGSL lacks. Clients keep their own GPU setup: localdesktop-plasma-mobile-shell restores
+# it from LOCALDESKTOP_KWIN_GL.
+unset LIBGL_ALWAYS_SOFTWARE MESA_VK_WSI_DEBUG
+export KWIN_COMPOSE=O2 KWIN_RENDER_NODES=/dev/dri/renderD0 LOCALDESKTOP_KWIN_GL=1
+exec kwin_wayland "$@"

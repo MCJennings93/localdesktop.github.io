@@ -1,0 +1,2 @@
+#!/bin/sh
+/usr/local/bin/localdesktop-wlroots-output >/tmp/localdesktop-wlroots-output.log 2>&1 &

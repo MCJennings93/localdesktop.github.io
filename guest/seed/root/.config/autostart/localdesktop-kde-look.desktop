@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=KDE / postmarketOS look
+Exec=/usr/local/bin/localdesktop-kde-look
+OnlyShowIn=XFCE;
+X-XFCE-Autostart-Override=true

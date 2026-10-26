@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<!-- Bare labwc between Local Desktop's compositor and KWin: KWin 6.7's nested backend requires
+     wp_viewporter, wp_single_pixel_buffer, pointer constraints and presentation-time, which the app's
+     compositor doesn't offer yet. KWin runs fullscreen in here; see startplasmamobile-localdesktop. -->
+<labwc_config>
+  <core>
+    <reuseOutputMode>yes</reuseOutputMode>
+    <decoration>client</decoration>
+  </core>
+  <keyboard><keybind key="W-F12"><action name="None"/></keybind></keyboard>
+</labwc_config>
