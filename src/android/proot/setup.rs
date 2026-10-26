@@ -1324,7 +1324,42 @@ fn write_resolv_conf(fs_root: &Path, android_servers: &[String]) {
     }
 }
 
+/// Removes proot's temporary directories (`proot-<pid>-*`, `prootshm-<pid>-*` in PROOT_TMP_DIR,
+/// the app's files directory) that outlived their proot: proot deletes them on exit, but not when
+/// it is killed, as happens to every proot when Android stops the app, so they piled up by the
+/// dozen. At app start no proot of this app is running yet; a directory is kept only if its pid
+/// still belongs to a proot.
+fn remove_stale_proot_tmp_dirs() {
+    let data_dir = &get_application_context().data_dir;
+    let Ok(entries) = fs::read_dir(data_dir) else {
+        return;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Some(rest) = name
+            .strip_prefix("proot-")
+            .or_else(|| name.strip_prefix("prootshm-"))
+        else {
+            continue;
+        };
+        let Some(pid) = rest.split('-').next().filter(|pid| pid.parse::<u32>().is_ok()) else {
+            continue;
+        };
+        let alive = fs::read(format!("/proc/{pid}/cmdline"))
+            .is_ok_and(|cmdline| String::from_utf8_lossy(&cmdline).contains("libproot"));
+        if !alive && fs::remove_dir_all(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    if removed > 0 {
+        log::info!("Removed {removed} stale proot temporary directories");
+    }
+}
+
 pub fn setup(android_app: AndroidApp) -> PolarBearBackend {
+    remove_stale_proot_tmp_dirs();
     let (sender, receiver) = mpsc::channel();
     let progress = Arc::new(Mutex::new(0));
 
