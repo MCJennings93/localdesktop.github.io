@@ -81,6 +81,10 @@ fn configure_output(backend: &mut crate::android::backend::wayland::WaylandBacke
 
 impl ApplicationHandler<AppUserEvent> for PolarBearApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        run_in_jvm(
+            accessibility::show_keyboard_shortcuts_prompt,
+            self.frontend.android_app.clone(),
+        );
         match self.backend {
             PolarBearBackend::WebView(ref mut backend) => {
                 accessibility::set_runtime_active(false);
