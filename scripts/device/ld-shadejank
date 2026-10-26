@@ -1,0 +1,52 @@
+#!/bin/sh
+# Measures how smoothly Android's own quick-settings shade animates over Local Desktop: pulls the
+# shade down and up N times and reports SystemUI's frame stats (dumpsys gfxinfo: janky frames and
+# frame-time percentiles), plus the CPU time the app's processes used meanwhile.
+# BROWSER=firefox|brave plays a YouTube video fullscreen first; BROWSER=none (default) measures the
+# idle desktop. Usage: ld-shadejank <label> [cycles, default 15]
+set -u
+LABEL=$1; N=${2:-15}
+D=~/localdesktop-bench/shadejank-$LABEL; rm -rf "$D"; mkdir -p "$D"
+HERE=$(dirname "$0")
+URL=${URL:-https://www.youtube.com/watch?v=uMhdcq2rqUU}
+build=$(adb shell "run-as app.polarbear cat files/arch/etc/localdesktop/build-id" | tr -d '\r')
+"$HERE"/ld-run 'pkill -TERM -f /usr/lib/firefox/firefox; pkill -TERM -f "brave-origin-nightly/brave "; sleep 2; true' 20 >/dev/null
+case ${BROWSER:-none} in
+firefox)
+    "$HERE"/ld-run "rm -rf /tmp/ffjank; cp -a /root/greentest/ff-template /tmp/ffjank; P=\$(pgrep -x plasmashell); (xargs -0 -a /proc/\$P/environ sh -c 'exec env -i \"\$@\" timeout -s TERM $((N * 4 + 60)) firefox --no-remote --profile /tmp/ffjank $URL' sh > /tmp/shadejank-browser.log 2>&1 &); echo started" 30 >/dev/null ;;
+brave)
+    "$HERE"/ld-run "rm -rf /tmp/bjank; cp -a /root/greentest/profile-template /tmp/bjank; P=\$(pgrep -x plasmashell); (xargs -0 -a /proc/\$P/environ sh -c 'exec env -i \"\$@\" timeout -s TERM $((N * 4 + 60)) brave-origin-nightly --user-data-dir=/tmp/bjank --no-first-run --start-maximized --autoplay-policy=no-user-gesture-required $URL' sh > /tmp/shadejank-browser.log 2>&1 &); echo started" 30 >/dev/null ;;
+esac
+if [ "${BROWSER:-none}" != none ]; then
+    sleep 18
+    adb shell input keyevent KEYCODE_F
+    sleep 12
+fi
+# Total utime+stime (clock ticks) of the app and everything under it.
+app_ticks() {
+    adb shell "run-as app.polarbear sh -c 'for p in /proc/[0-9]*/stat; do cat \$p 2>/dev/null; done'" |
+        awk '{ sub(/^.*\) /, ""); t += $12 + $13 } END { print t }'
+}
+adb shell dumpsys gfxinfo com.android.systemui reset >/dev/null
+t0=$(app_ticks); s0=$(date +%s.%N)
+i=1
+while [ $i -le "$N" ]; do
+    adb shell cmd statusbar expand-settings; sleep 1.5
+    adb shell cmd statusbar collapse; sleep 1.5
+    i=$((i + 1))
+done
+t1=$(app_ticks); s1=$(date +%s.%N)
+adb shell dumpsys gfxinfo com.android.systemui > "$D/gfxinfo.txt"
+adb exec-out "run-as app.polarbear cat files/arch/tmp/shadejank-browser.log" > "$D/browser.log" 2>/dev/null
+adb logcat -d -e frame-stats | tail -20 > "$D/frame-stats.txt"
+{
+    echo "build: $build  browser: ${BROWSER:-none}  cycles: $N"
+    grep -m1 -E "Total frames rendered" "$D/gfxinfo.txt"
+    grep -m1 -E "Janky frames:" "$D/gfxinfo.txt"
+    grep -m4 -E "^(50|90|95|99)th percentile" "$D/gfxinfo.txt"
+    echo "app CPU: $(echo "$t0 $t1 $s0 $s1" | awk '{ printf "%.0f%% of one core", ($2 - $1) / ($4 - $3) }')"
+    if grep -qE 'exited unexpectedly|service crashed|Trace/breakpoint trap|Segmentation fault|Aborted|not safe to map' "$D/browser.log"; then
+        echo "BROWSER CRASHED: result invalid"
+    fi
+} | tee "$D/summary.txt"
+"$HERE"/ld-run 'pkill -TERM -f /usr/lib/firefox/firefox; pkill -TERM -f "brave-origin-nightly/brave "; true' 20 >/dev/null
