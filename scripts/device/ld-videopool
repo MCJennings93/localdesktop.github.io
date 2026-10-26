@@ -1,0 +1,42 @@
+#!/bin/sh
+# Repeated-launch test for Brave's green video frames, which are decided per launch: each launch
+# plays a YouTube video fullscreen for 50 s and counts frame-stats GREEN frames. A launch is
+# INVALID if Local Desktop restarted or lost the foreground meanwhile, and CRASHED if the browser's
+# log shows a crashed browser or child process (then nothing played, so 0 green proves nothing).
+# BROWSER=firefox uses Firefox with /root/greentest/ff-template (autoplay on, uBlock Origin
+# installed) instead of Brave, for comparison.
+# Usage: ld-videopool <out-dir> <arm-label> <launches> [browser flags]
+set -u
+OUT=$1; ARM=$2; N=$3; FLAGS=${4:-}
+mkdir -p "$OUT"
+HERE=$(dirname "$0")
+URL=${URL:-https://www.youtube.com/watch?v=uMhdcq2rqUU}
+for i in $(seq 1 "$N"); do
+    pid_before=$(adb shell pidof app.polarbear | tr -d '\r')
+    if [ "${BROWSER:-brave}" = firefox ]; then
+        "$HERE"/ld-run "pkill -TERM -f /usr/lib/firefox/firefox; sleep 2; rm -rf /tmp/ffpool; cp -a /root/greentest/ff-template /tmp/ffpool; P=\$(pgrep -x plasmashell); (xargs -0 -a /proc/\$P/environ sh -c 'exec env -i \"\$@\" timeout -s TERM 70 firefox --no-remote --profile /tmp/ffpool $FLAGS $URL' sh > /tmp/greentest-brave.log 2>&1 &); echo started" 30 >/dev/null
+        sleep 18
+        adb shell input keyevent KEYCODE_F
+        adb logcat -c
+        sleep 50
+        result=$(adb logcat -d | grep -c "frame-stats: GREEN frame" || true)
+        windows=$(adb logcat -d | grep -c "frame-stats: redraws" || true)
+        [ "$windows" -lt 10 ] && result=""
+    else
+        result=$(SHELL_ENV=1 URL="$URL" KEY=KEYCODE_F "$HERE"/ld-greentest "pool-$ARM-$i" 50 "--start-maximized $FLAGS" 2>&1 |
+            grep -o "): [0-9]* green" | grep -o "[0-9]*")
+    fi
+    pid_after=$(adb shell pidof app.polarbear | tr -d '\r')
+    focus=$(adb shell dumpsys activity activities | grep -m1 topResumedActivity | grep -c polarbear)
+    build=$(adb shell "run-as app.polarbear cat files/arch/etc/localdesktop/build-id" | tr -d '\r')
+    log="$OUT/brave-$ARM-$i.log"
+    adb exec-out "run-as app.polarbear cat files/arch/tmp/greentest-brave.log" > "$log"
+    if [ -z "$result" ] || [ "$pid_before" != "$pid_after" ] || [ "$focus" != 1 ]; then
+        state=INVALID
+    elif grep -qE 'exited unexpectedly|service crashed|Trace/breakpoint trap|Segmentation fault|Aborted|not safe to map' "$log"; then
+        state=CRASHED
+    else
+        state=ok
+    fi
+    echo "$build $ARM launch $i: ${result:-?} green ($state)" | tee -a "$OUT/summary.txt"
+done
