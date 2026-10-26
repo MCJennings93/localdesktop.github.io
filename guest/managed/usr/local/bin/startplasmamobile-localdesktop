@@ -52,8 +52,10 @@ export KWIN_COMPOSE=Q
 # Qt logs to journald otherwise, so errors would vanish.
 export QT_FORCE_STDERR_LOGGING=1
 # Android blocks uevent netlink sockets; without this KWin 6.7 crashes in GpuManager.
-# segvbt prints a backtrace on crashes (gdb/strace cannot attach under proot).
-export LD_PRELOAD="/usr/local/lib/udev-netlink-shim.so /usr/local/lib/segvbt.so$GPU_PRELOAD"
+# Android also forbids reopening a memfd through /proc/self/fd, which Firefox needs (see
+# /usr/local/src/memfd-reopen-shim.c). segvbt prints a backtrace on crashes (gdb/strace cannot
+# attach under proot).
+export LD_PRELOAD="/usr/local/lib/udev-netlink-shim.so /usr/local/lib/memfd-reopen-shim.so /usr/local/lib/segvbt.so$GPU_PRELOAD"
 unset DISPLAY
 
 rm -f /tmp/wayland-2 /tmp/wayland-2.lock
