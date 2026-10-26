@@ -130,6 +130,20 @@ Recommended setup:
 > **Tip**: You can debug the app on either a physical device or a virtual device.
 
 For more instructions on how to work on this project, please visit the [Developer Manual](https://localdesktop.github.io/docs/developer/how-it-works).
+
+### Guest files shipped in the APK
+
+`guest/` holds files the app installs into the Arch rootfs at every start (`setup_guest_overlay` in `src/android/proot/setup.rs`):
+
+- `guest/managed/`: rewritten whenever they differ from the APK's copy, so app updates reach them: the Plasma Mobile session scripts, the `LD_PRELOAD` shims (`usr/local/lib`, with sources in `usr/local/src`) and `localdesktop-install-plasma-mobile`, which installs the KDE package set and switches the session to Plasma Mobile.
+- `guest/seed/`: written only when missing, so user edits stick: KDE look, Plasma Mobile and labwc settings, Brave's flags.
+- `guest/blobs/turnip-kgsl.tar.xz`: Mesa Turnip built with the KGSL backend (the Adreno Vulkan driver behind Zink), unpacked into `/opt/turnip-kgsl` whenever the shipped build changes.
+- `guest/tools/`: test programs that are not shipped (see `scripts/device/README.md`).
+
+`guest/build-overlay.sh` packs these into `assets/` and runs as part of `make build` and `make build-docker`. `BUILD_ID=<name>` labels a build; the label lands in `/etc/localdesktop/build-id`. After editing a shim's source, `guest/build-shims.sh` rebuilds the `.so` files with the guest's own compiler over adb. To try edited guest files on a device without a rebuild, create `/etc/localdesktop/dev-keep-managed` so the app leaves the managed files alone, and delete it afterwards.
+
+The app also writes `/etc/resolv.conf` at every start from Android's active network (create `/etc/localdesktop/keep-resolv-conf` to manage it yourself).
+
 ## Credits
 
 - The app icon is Tux by Larry Ewing (lewing@isc.tamu.edu), created with The GIMP.
