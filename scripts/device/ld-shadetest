@@ -3,6 +3,10 @@
 # screenshots the inner display right after each close, counting garbage-green pixels (R,B<16,
 # G>=48) per shot: the artifact the user sees after Android overlays. Usage:
 #   ld-shadetest <label> [cycles, default 20] [extra brave flags]
+# VIDEO=1 waits for the YouTube video to play first (the page autoplays it). Every run also counts
+# the app's frame-stats GREEN frames (needs files/frame-stats), which catches one-frame flashes the
+# screenshots miss. URL= opens another page; PROFILE_SRC= copies another Brave profile (e.g. the
+# user's, /root/.config/BraveSoftware/Brave-Origin-Nightly) instead of the test template.
 set -eu
 LABEL=$1; N=${2:-20}; FLAGS=${3:-}
 D=~/localdesktop-bench/shade-$LABEL; rm -rf "$D"; mkdir -p "$D"
@@ -10,8 +14,10 @@ D=~/localdesktop-bench/shade-$LABEL; rm -rf "$D"; mkdir -p "$D"
 adb shell "run-as app.polarbear cat files/arch/etc/localdesktop/build-id" 2>/dev/null | tr -d "\r" > "$D/build-id"
 echo "build: $(cat "$D/build-id")"
 "$(dirname "$0")"/ld-run 'pkill -TERM -f "brave-origin-nightly/brave " ; sleep 2; true' 20 >/dev/null
-( "$(dirname "$0")"/ld-run "rm -rf /tmp/greentest-profile; cp -a /root/greentest/profile-template /tmp/greentest-profile; xargs -0 -a /proc/\$(pgrep -f 'plasmashell -p' | head -1)/environ sh -c 'exec env -i \"\$@\" timeout -s TERM $((N * 4 + 40)) brave-origin-nightly --user-data-dir=/tmp/greentest-profile --no-first-run --start-maximized --autoplay-policy=no-user-gesture-required $FLAGS https://www.youtube.com/watch?v=aqz-KE-bpKQ' sh >/tmp/shadetest-brave.log 2>&1" $((N * 4 + 80)) > "$D/run.txt" 2>&1 & )
+( "$(dirname "$0")"/ld-run "rm -rf /tmp/greentest-profile; cp -a ${PROFILE_SRC:-/root/greentest/profile-template} /tmp/greentest-profile; xargs -0 -a /proc/\$(pgrep -f 'plasmashell -p' | head -1)/environ sh -c 'exec env -i \"\$@\" timeout -s TERM $((N * 4 + 40)) brave-origin-nightly --user-data-dir=/tmp/greentest-profile --no-first-run --start-maximized --autoplay-policy=no-user-gesture-required $FLAGS ${URL:-https://www.youtube.com/watch?v=aqz-KE-bpKQ}' sh >/tmp/shadetest-brave.log 2>&1" $((N * 4 + 80)) > "$D/run.txt" 2>&1 & )
 sleep 25
+[ -n "${VIDEO:-}" ] && sleep 10
+adb logcat -c
 i=1
 while [ $i -le "$N" ]; do
     adb shell cmd statusbar expand-settings; sleep 1.2
@@ -20,6 +26,8 @@ while [ $i -le "$N" ]; do
     sleep 1
     i=$((i + 1))
 done
+GREEN=$(adb logcat -d | grep -c "frame-stats: GREEN frame" || true)
+echo "frame-stats GREEN frames during the cycles: $GREEN" | tee "$D/green.txt"
 python3 -I - "$D" <<'PY'
 import sys, glob, os, struct
 import numpy as np
