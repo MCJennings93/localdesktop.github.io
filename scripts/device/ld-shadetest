@@ -1,0 +1,35 @@
+#!/bin/sh
+# Opens and closes Android's quick-settings shade over Brave (YouTube, test profile) N times and
+# screenshots the inner display right after each close, counting garbage-green pixels (R,B<16,
+# G>=48) per shot: the artifact the user sees after Android overlays. Usage:
+#   ld-shadetest <label> [cycles, default 20] [extra brave flags]
+set -eu
+LABEL=$1; N=${2:-20}; FLAGS=${3:-}
+D=~/localdesktop-bench/shade-$LABEL; rm -rf "$D"; mkdir -p "$D"
+# Which APK this ran on (written by the app from guest/build-overlay.sh).
+adb shell "run-as app.polarbear cat files/arch/etc/localdesktop/build-id" 2>/dev/null | tr -d "\r" > "$D/build-id"
+echo "build: $(cat "$D/build-id")"
+"$(dirname "$0")"/ld-run 'pkill -TERM -f "brave-origin-nightly/brave " ; sleep 2; true' 20 >/dev/null
+( "$(dirname "$0")"/ld-run "rm -rf /tmp/greentest-profile; cp -a /root/greentest/profile-template /tmp/greentest-profile; xargs -0 -a /proc/\$(pgrep -f 'plasmashell -p' | head -1)/environ sh -c 'exec env -i \"\$@\" timeout -s TERM $((N * 4 + 40)) brave-origin-nightly --user-data-dir=/tmp/greentest-profile --no-first-run --start-maximized --autoplay-policy=no-user-gesture-required $FLAGS https://www.youtube.com/watch?v=aqz-KE-bpKQ' sh >/tmp/shadetest-brave.log 2>&1" $((N * 4 + 80)) > "$D/run.txt" 2>&1 & )
+sleep 25
+i=1
+while [ $i -le "$N" ]; do
+    adb shell cmd statusbar expand-settings; sleep 1.2
+    adb shell cmd statusbar collapse; sleep 0.12
+    adb exec-out screencap -d 4630947175568309891 > "$D/c$i.raw"
+    sleep 1
+    i=$((i + 1))
+done
+python3 -I - "$D" <<'PY'
+import sys, glob, os, struct
+import numpy as np
+bad = 0
+files = sorted(glob.glob(sys.argv[1] + '/c*.raw'), key=lambda f: int(os.path.basename(f)[1:-4]))
+for f in files:
+    b = open(f, 'rb').read(); w, h, _ = struct.unpack('<III', b[:12])
+    a = np.frombuffer(b[len(b) - w * h * 4:], np.uint8).reshape(h, w, 4)
+    n = int(((a[:, :, 0] < 16) & (a[:, :, 2] < 16) & (a[:, :, 1] >= 48)).sum())
+    if n > 2000: bad += 1
+    print(os.path.basename(f), n)
+print(f"== {os.path.basename(sys.argv[1])}: {bad}/{len(files)} screenshots with garbage")
+PY

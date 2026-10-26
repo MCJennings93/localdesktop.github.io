@@ -1,0 +1,79 @@
+#!/bin/sh
+# Frame-timing benchmark for Local Desktop: idle, app-drawer open/close animations, then es2gears
+# (a GL client animating continuously).
+# For each phase prints SurfaceFlinger's view of our layer (fps, frame-time histogram, jank,
+# latch-to-present), the app's frame-stats log lines (redraws/s, new client buffers/s, render
+# and swap times) and CPU seconds of the app, KWin and plasmashell.
+# Needs the app running with files/frame-stats present (the app reads it at start).
+# Usage: ld-framebench [label]
+LABEL=${1:-run}
+OUT=${LD_FRAMEBENCH_DIR:-$HOME/localdesktop-bench}/$LABEL-$(date +%m%d-%H%M%S)
+mkdir -p "$OUT"
+# Which APK this ran on (written by the app from guest/build-overlay.sh).
+adb shell "run-as app.polarbear cat files/arch/etc/localdesktop/build-id" 2>/dev/null | tr -d "\r" > "$OUT/build-id"
+echo "build: $(cat "$OUT/build-id")"
+ticks() { adb shell "cat /proc/$1/stat" 2>/dev/null | awk '{print $14+$15}'; }
+pids() {
+    A=$(adb shell pidof app.polarbear | awk '{print $1}' | tr -d '\r')
+    K=$(adb shell pidof kwin_wayland | tr -d '\r')
+    P=$(adb shell pidof plasmashell | tr -d '\r')
+}
+sf_summary() {
+    # Our layer is the NativeActivity's child surface: "app.polarbear/android.app.NativeActivity$_<pid>#<id>".
+    awk '
+        /^layerName = app.polarbear\/android.app.NativeActivity\$/ { on = 1; next }
+        /^layerName = / { on = 0 }
+        on && /^(totalFrames|droppedFrames|jankyFrames|averageFPS) =/ { printf "%s ", $0 }
+        on && /present2present histogram/ { getline; p2p = $0 }
+        on && /latch2present histogram/ { getline; l2p = $0 }
+        END {
+            n = split(p2p, a, " "); line = ""; slow = 0; total = 0
+            for (i = 1; i <= n; i++) { split(a[i], kv, "="); ms = kv[1] + 0; c = kv[2] + 0; total += c
+                if (c > 0) line = line " " a[i]; if (ms >= 12) slow += c }
+            printf "\n  present-to-present:%s\n  frames >=12ms apart: %d of %d\n", line, slow, total
+            n = split(l2p, a, " "); line = ""
+            for (i = 1; i <= n; i++) { split(a[i], kv, "="); if (kv[2] + 0 > 0) line = line " " a[i] }
+            printf "  latch-to-present:%s\n", line
+        }'
+}
+phase() {
+    name=$1; shift
+    pids
+    adb logcat -c
+    adb shell 'dumpsys SurfaceFlinger --timestats -enable -clear' >/dev/null
+    a0=$(ticks $A); k0=$(ticks $K); p0=$(ticks $P)
+    "$@"
+    a1=$(ticks $A); k1=$(ticks $K); p1=$(ticks $P)
+    adb shell 'dumpsys SurfaceFlinger --timestats -dump' > "$OUT/$name.timestats"
+    adb shell 'dumpsys SurfaceFlinger --timestats -disable' >/dev/null
+    adb logcat -d | grep "frame-stats:" | sed 's/.*frame-stats: //' > "$OUT/$name.framestats"
+    {
+        echo "== $name"
+        sf_summary < "$OUT/$name.timestats"
+        echo "  app frame-stats (2 s windows):"; sed 's/^/    /' "$OUT/$name.framestats"
+        echo "  cpu: app=$((a1 - a0))cs kwin=$((k1 - k0))cs plasmashell=$((p1 - p0))cs (cs = 1/100 s)"
+    } | tee -a "$OUT/summary.txt"
+}
+idle() { sleep 10; }
+drawer() {
+    for i in 1 2 3 4 5 6; do
+        adb shell input swipe 900 1850 900 900 250; sleep 0.8
+        adb shell input swipe 900 600 900 1700 250; sleep 0.8
+    done
+}
+gears() {
+    # es2gears through the session runner (see ld-run): a GL client drawing as fast as KWin lets it.
+    # It runs with plasmashell's environment, as an app started from the drawer would, so it gets
+    # the build's real client GPU settings (the runner's own environment is the session script's).
+    printf '%s\n' 'xargs -0 -a /proc/$(pgrep -x plasmashell)/environ sh -c '"'"'exec env -i "$@" stdbuf -oL es2gears_wayland'"'"' sh > /tmp/gears-bench.log 2>&1 & sleep 13; pkill -f es2gears_wayland; echo "MESA_VK_WSI_DEBUG=$(tr "\0" "\n" < /proc/$(pgrep -x plasmashell)/environ | sed -n "s/^MESA_VK_WSI_DEBUG=//p")" >> /tmp/gears-bench.log' |
+        adb shell "run-as app.polarbear sh -c 'cat > files/arch/tmp/ld-run/gears-bench.sh'"
+    sleep 3; adb shell 'dumpsys SurfaceFlinger --timestats -clear' >/dev/null; adb logcat -c
+    sleep 10
+    adb shell "run-as app.polarbear cat files/arch/tmp/gears-bench.log" | grep -E "FPS|MESA_VK_WSI_DEBUG" | tail -3 | sed 's/^/  es2gears: /'
+    sleep 2
+}
+adb shell input keyevent KEYCODE_WAKEUP
+echo "label=$LABEL  output in $OUT" | tee "$OUT/summary.txt"
+phase idle idle
+phase drawer drawer
+phase gears gears

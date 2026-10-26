@@ -1,0 +1,51 @@
+#!/bin/sh
+# Plays a grayscale test video fullscreen in Brave inside the live Local Desktop session and counts
+# "green" frames (unfinished video frames, see src/android/backend/wayland/frame_stats.rs).
+# Needs the APK with the green probe, files/frame-stats present at app start, and the test video
+# in /root/greentest (gray1080.webm + index.html). Results go to ~/localdesktop-bench/green-<label>.log.
+# Usage: ld-greentest <label> [seconds, default 300] [brave flags, default --start-fullscreen]
+set -eu
+LABEL=$1
+SECS=${2:-300}
+FLAGS=${3:---start-fullscreen}
+# PAGE=fs.html: letterboxed video that a tap puts into element fullscreen (Fullscreen API, as YouTube does).
+PAGE=${PAGE:-index.html}
+# URL=...: open this instead of a local page; KEY=<keycode> is sent 15 s in (e.g. KEYCODE_F for YouTube fullscreen).
+URL=${URL:-file:///root/greentest/$PAGE}
+OUT=~/localdesktop-bench/green-$LABEL.log
+adb logcat -c
+# Which APK this ran on (written by the app from guest/build-overlay.sh).
+adb shell "run-as app.polarbear cat files/arch/etc/localdesktop/build-id" 2>/dev/null | tr -d "\r" > "$OUT".build-id
+echo "build: $(cat "$OUT".build-id)"
+# Stream the log during the run: over minutes, the logcat ring buffer would drop early lines.
+adb logcat -v time -e frame-stats > "$OUT" 2>&1 </dev/null &
+LOGCAT=$!
+if [ "$PAGE" = fs.html ]; then
+    # Tap the middle of the inner display once the page is up, to enter element fullscreen.
+    ( sleep 12; adb shell input tap 900 1100 ) &
+fi
+if [ -n "${KEY:-}" ]; then
+    ( sleep 15; adb shell input keyevent "$KEY" ) &
+fi
+# TAPS=<seconds>: tap the middle of the screen this often after the first 20 s (shows player controls).
+if [ -n "${TAPS:-}" ]; then
+    ( sleep 20; end=$(( $(date +%s) + SECS - 25 )); while [ "$(date +%s)" -lt "$end" ]; do adb shell input tap 900 1100; sleep "$TAPS"; done ) &
+fi
+# SHELL_ENV=1: start Brave with plasmashell's exact environment (as a launch from the app drawer).
+if [ -n "${SHELL_ENV:-}" ]; then
+    LAUNCH='xargs -0 -a /proc/$(pgrep -f "plasmashell -p" | head -1)/environ sh -c '"'"'exec env -i "$@" '
+    LAUNCH_END="' sh"
+else
+    LAUNCH='LD_PRELOAD="$LD_PRELOAD /usr/local/lib/kgsl-drm-shim.so" '
+    LAUNCH_END=""
+fi
+PROFILE_SRC=${PROFILE_SRC:-/root/greentest/profile-template}
+# The runner's environment lacks kgsl-drm-shim (only KWin's children get it), and Chromium
+# aborts on the fake render node without it.
+"$(dirname "$0")"/ld-run "rm -rf /tmp/greentest-profile; cp -a $PROFILE_SRC /tmp/greentest-profile; $LAUNCH timeout -s TERM $SECS brave-origin-nightly --user-data-dir=/tmp/greentest-profile --no-first-run $FLAGS --autoplay-policy=no-user-gesture-required --allow-file-access-from-files $URL$LAUNCH_END >/tmp/greentest-brave.log 2>&1; echo brave-exit \$?; grep -cE 'FATAL|GPU process exited' /tmp/greentest-brave.log || true" $((SECS + 60))
+sleep 3
+kill $LOGCAT 2>/dev/null || true
+wait $LOGCAT 2>/dev/null || true
+echo "== $LABEL [$FLAGS] ($SECS s): $(grep -c 'GREEN frame' "$OUT") green frames"
+grep "probed=" "$OUT" | sed -E 's/.*new-buffers=([0-9.]+).*probed=([0-9]+) green=([0-9]+).*/\1 \2 \3/' |
+    awk '{fps+=$1; probed+=$2; n++} END {if (n) printf "windows=%d avg-new-buffers=%.1f/s probed=%d\n", n, fps/n, probed}'

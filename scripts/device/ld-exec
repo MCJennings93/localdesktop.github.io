@@ -1,0 +1,9 @@
+#!/bin/sh
+# Run a shell command inside Local Desktop's Arch proot on the phone, as the app does.
+# Usage: ld-exec 'pacman -Q kwin'
+APK=$(adb shell pm path app.polarbear | tr -d '\r' | sed 's/^package://')
+LIB=$(dirname "$APK")/lib/arm64
+D=/data/data/app.polarbear/files
+R=$D/arch
+CMD=$(printf '%s' "$1" | sed "s/'/'\\\\''/g")
+adb shell run-as app.polarbear sh -c "'PROOT_LOADER=$LIB/libproot_loader.so PROOT_TMP_DIR=$D $LIB/libproot.so -r $R -L --link2symlink --sysvipc --kill-on-exit --root-id -w / --bind=/dev --bind=/proc --bind=/sys --bind=$R/tmp:/dev/shm --bind=/dev/urandom:/dev/random --bind=/proc/self/fd:/dev/fd --bind=$R/proc/.loadavg:/proc/loadavg --bind=$R/proc/.stat:/proc/stat --bind=$R/proc/.uptime:/proc/uptime --bind=$R/proc/.version:/proc/version --bind=$R/proc/.vmstat:/proc/vmstat --bind=$R/proc/.cpuinfo:/proc/cpuinfo --bind=$R/sys/.pci:/sys/bus/pci /usr/bin/env -i HOME=/root LANG=C.UTF-8 TERM=xterm-256color PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TMPDIR=/tmp USER=root LOGNAME=root sh -c '\\''$CMD'\\'''"

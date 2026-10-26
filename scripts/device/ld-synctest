@@ -1,0 +1,18 @@
+#!/bin/sh
+# Runs /root/synctest fullscreen in the live session and sums the frame-stats sync counters
+# (mixed = partly drawn frames, stale = old frames shown again). Usage:
+#   ld-synctest <label> [seconds, default 30] [iterations, default 3000] [passes, default 1] [env assignments...]
+set -eu
+LABEL=$1; SECS=${2:-30}; ITER=${3:-3000}; PASSES=${4:-1}; shift 4 2>/dev/null || shift $#
+ENVS="$*"
+OUT=~/localdesktop-bench/sync-$LABEL.log
+adb logcat -c
+# Which APK this ran on (written by the app from guest/build-overlay.sh).
+adb shell "run-as app.polarbear cat files/arch/etc/localdesktop/build-id" 2>/dev/null | tr -d "\r" > "$OUT".build-id
+echo "build: $(cat "$OUT".build-id)"
+adb logcat -v time -e frame-stats > "$OUT" 2>&1 </dev/null &
+LOGCAT=$!
+"$(dirname "$0")"/ld-run "unset MESA_VK_WSI_DEBUG; cd /root/synctest; env $ENVS ./synctest $SECS $ITER $PASSES 2>&1 | grep -v '^MESA'" $((SECS + 60))
+sleep 3; kill $LOGCAT 2>/dev/null || true; wait $LOGCAT 2>/dev/null || true
+grep -o "sync\[frames=[0-9]* mixed=[0-9]* stale=[0-9]*\]" "$OUT" | tr -c '0-9\n' ' ' |
+    awk -v l="$LABEL [$ENVS]" '{f+=$1; m+=$2; s+=$3} END {printf "== %s: synctest frames seen=%d mixed=%d stale=%d\n", l, f, m, s}'
