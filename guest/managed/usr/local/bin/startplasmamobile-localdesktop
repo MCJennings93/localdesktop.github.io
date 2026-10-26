@@ -27,10 +27,11 @@ export QTWEBENGINE_DISABLE_SANDBOX=1 ELECTRON_DISABLE_SANDBOX=1
 export XCURSOR_THEME=breeze_cursors XCURSOR_SIZE=24
 
 # GPU OpenGL for the shell and apps: Zink on Turnip, Mesa's Adreno Vulkan driver built with
-# the KGSL backend in /opt/turnip-kgsl. See /usr/local/src/zink-kopper-shim.c for why
-# LIBGL_ALWAYS_SOFTWARE is set and hidden from Zink. MESA_VK_WSI_DEBUG=sw copies finished frames
-# into wl_shm buffers; with KWin on OpenGL, clients present dmabufs instead (see
-# localdesktop-plasma-mobile-shell). Without Turnip, Qt Quick uses Mesa llvmpipe (CPU). (The app
+# the KGSL backend in /opt/turnip-kgsl. These settings are for KWin on QPainter, which offers no
+# render device: see /usr/local/src/zink-kopper-shim.c for why LIBGL_ALWAYS_SOFTWARE is set and
+# hidden from Zink, and MESA_VK_WSI_DEBUG=sw copies finished frames into wl_shm buffers. With KWin
+# on OpenGL (the default), kwin-localdesktop-gl drops both, and clients use Mesa's hardware path
+# and present dmabufs (see localdesktop-plasma-mobile-shell). Without Turnip, Qt Quick uses Mesa llvmpipe (CPU). (The app
 # binds a /proc/cpuinfo that keeps llvmpipe's LLVM off SVE, which this SoC has disabled.)
 TURNIP_ICD=/opt/turnip-kgsl/share/vulkan/icd.d/freedreno_icd.aarch64.json
 ZINK_SHIM=/usr/local/lib/zink-kopper-shim.so
