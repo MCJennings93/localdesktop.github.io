@@ -1,0 +1,16 @@
+# Explicit sync for GPU buffers (wp_linux_drm_syncobj), emulated over the KGSL GPU by
+# /usr/local/lib/kgsl-syncobj.so (source: /usr/local/src/kgsl-syncobj.c). It keeps KWin from
+# showing a Chromium frame before the GPU has finished drawing it. Read at program start; restart
+# Local Desktop after editing.
+
+# no: report no sync object support, so everything falls back to implicit (no) sync.
+enabled = yes
+
+# KWin and Chromium only use explicit sync on kernels with DRM_IOCTL_SYNCOBJ_EVENTFD (KWin 6.6.19,
+# Chromium 6.11), which the emulation provides. While the real kernel is older than this, the
+# programs below are told this version instead (logged once per process); a newer real kernel is
+# reported as it is. Raise it if a future KWin or Chromium asks for more.
+min_kernel = 6.12
+
+# Executable names that get the raised version: the compositor and Chromium-based programs.
+programs = kwin_wayland brave chrome chromium electron steamwebhelper

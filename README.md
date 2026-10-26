@@ -142,6 +142,8 @@ For more instructions on how to work on this project, please visit the [Develope
 
 `guest/build-overlay.sh` packs these into `assets/` and runs as part of `make build` and `make build-docker`. `BUILD_ID=<name>` labels a build; the label lands in `/etc/localdesktop/build-id`. After editing a shim's source, `guest/build-shims.sh` rebuilds the `.so` files with the guest's own compiler over adb. To try edited guest files on a device without a rebuild, create `/etc/localdesktop/dev-keep-managed` so the app leaves the managed files alone, and delete it afterwards.
 
+`kgsl-syncobj.so` emulates DRM sync objects on the KGSL GPU so KWin and Chromium-based apps use explicit sync (`wp_linux_drm_syncobj`) for the GPU buffers they exchange; `/etc/localdesktop/explicit-sync` turns it off or changes which programs are told a new enough kernel version.
+
 The app also writes `/etc/resolv.conf` at every start from Android's active network (create `/etc/localdesktop/keep-resolv-conf` to manage it yourself).
 
 ## Credits

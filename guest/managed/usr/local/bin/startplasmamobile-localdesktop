@@ -40,8 +40,12 @@ if [ -r "$TURNIP_ICD" ] && [ -r "$ZINK_SHIM" ]; then
     export MESA_LOADER_DRIVER_OVERRIDE=zink LIBGL_ALWAYS_SOFTWARE=1
     GPU_PRELOAD=" $ZINK_SHIM"
     # Every program, not only KWin: Chromium aborts on the fake /dev/dri/renderD0 unless
-    # kgsl-drm-shim answers it (see /usr/local/src/kgsl-drm-shim.c).
-    [ -r /usr/local/lib/kgsl-drm-shim.so ] && GPU_PRELOAD="$GPU_PRELOAD /usr/local/lib/kgsl-drm-shim.so"
+    # kgsl-drm-shim answers it, and kgsl-syncobj gives KWin and Chromium explicit sync for the
+    # GPU buffers they exchange (see the sources in /usr/local/src and
+    # /etc/localdesktop/explicit-sync).
+    for shim in kgsl-drm-shim kgsl-syncobj; do
+        [ -r "/usr/local/lib/$shim.so" ] && GPU_PRELOAD="$GPU_PRELOAD /usr/local/lib/$shim.so"
+    done
 fi
 # KWin composites on the CPU unless kwin-localdesktop-gl takes over below.
 export KWIN_COMPOSE=Q
