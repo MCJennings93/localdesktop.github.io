@@ -29,6 +29,10 @@ pub struct EGLContext {
     pixel_format: Option<PixelFormat>,
     user_data: Arc<UserDataMap>,
     externally_managed: bool,
+    /// The 1x1 pbuffer `make_current` binds on Android, created on first use and destroyed with
+    /// the context (an `EGLSurface` as an address).
+    #[cfg(target_os = "android")]
+    pbuffer: std::sync::OnceLock<usize>,
     pub(crate) span: tracing::Span,
 }
 
@@ -109,6 +113,8 @@ impl EGLContext {
             display,
             config_id,
             pixel_format: Some(pixel_format),
+            #[cfg(target_os = "android")]
+            pbuffer: std::sync::OnceLock::new(),
             user_data: Arc::new(UserDataMap::default()),
             externally_managed: true,
             span,
@@ -360,6 +366,8 @@ impl EGLContext {
             display: display.clone(),
             config_id,
             pixel_format,
+            #[cfg(target_os = "android")]
+            pbuffer: std::sync::OnceLock::new(),
             user_data: if let Some(shared) = shared {
                 shared.user_data.clone()
             } else {
@@ -381,12 +389,17 @@ impl EGLContext {
     pub unsafe fn make_current(&self) -> Result<(), MakeCurrentError> {
         #[cfg(target_os = "android")]
         {
-            let pbuffer_attribs = vec![ffi::egl::WIDTH, 1, ffi::egl::HEIGHT, 1, ffi::egl::NONE];
-            let pbuffer = ffi::egl::CreatePbufferSurface(
-                **self.display.get_display_handle(),
-                self.config_id,
-                pbuffer_attribs.as_ptr() as *const c_int,
-            );
+            // One pbuffer per context: creating one on every call leaked a KGSL allocation in
+            // Android's Adreno driver each time (once per frame here), until the app hit the
+            // kernel's limit of memory mappings and aborted.
+            let pbuffer = *self.pbuffer.get_or_init(|| {
+                let pbuffer_attribs = [ffi::egl::WIDTH, 1, ffi::egl::HEIGHT, 1, ffi::egl::NONE];
+                ffi::egl::CreatePbufferSurface(
+                    **self.display.get_display_handle(),
+                    self.config_id,
+                    pbuffer_attribs.as_ptr() as *const c_int,
+                ) as usize
+            }) as ffi::egl::types::EGLSurface;
             wrap_egl_call_bool(|| {
                 ffi::egl::MakeCurrent(
                     **self.display.get_display_handle(),
@@ -535,6 +548,15 @@ impl Drop for EGLContext {
                 // ignore failures at this point
                 let _ = self.unbind();
                 ffi::egl::DestroyContext(**self.display.get_display_handle(), self.context);
+            }
+        }
+        #[cfg(target_os = "android")]
+        if let Some(&pbuffer) = self.pbuffer.get().filter(|&&pbuffer| pbuffer != 0) {
+            unsafe {
+                ffi::egl::DestroySurface(
+                    **self.display.get_display_handle(),
+                    pbuffer as ffi::egl::types::EGLSurface,
+                );
             }
         }
     }
