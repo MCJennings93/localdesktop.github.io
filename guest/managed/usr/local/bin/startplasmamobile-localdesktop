@@ -47,6 +47,13 @@ if [ -r "$TURNIP_ICD" ] && [ -r "$ZINK_SHIM" ]; then
     for shim in kgsl-drm-shim kgsl-syncobj; do
         [ -r "/usr/local/lib/$shim.so" ] && GPU_PRELOAD="$GPU_PRELOAD /usr/local/lib/$shim.so"
     done
+    # Chromium's pool for software-decoded video (MappableSharedImageVideoFramePool) sometimes
+    # hands the compositor frames whose chroma is still zero, which show as green flashes, mostly
+    # while an Android overlay (shade, toast, notification) is up; without the pool, frames go
+    # straight to the compositor and none are green (2026-10-27). Brave's launcher passes
+    # BRAVE_FLAGS on (its flags.conf holds --no-sandbox as one argument); /usr/local/bin/chromium
+    # adds the same flag. Unset BRAVE_FLAGS to reproduce the bug.
+    export BRAVE_FLAGS=--disable-gpu-memory-buffer-video-frames
 fi
 # KWin composites on the CPU unless kwin-localdesktop-gl takes over below.
 export KWIN_COMPOSE=Q

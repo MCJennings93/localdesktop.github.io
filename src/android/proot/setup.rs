@@ -785,11 +785,13 @@ done
     );
 
     // Same flag for terminal launches, following the /usr/local/bin PATH-priority pattern.
+    // --disable-gpu-memory-buffer-video-frames: see BRAVE_FLAGS in startplasmamobile-localdesktop
+    // (green video frames from Chromium's software-video frame pool).
     write_executable(
         &fs_root.join("usr/local/bin/chromium"),
         r#"#!/bin/sh
 [ -x /usr/bin/chromium ] || { echo "chromium is not installed" >&2; exit 127; }
-exec /usr/bin/chromium --no-sandbox "$@"
+exec /usr/bin/chromium --no-sandbox --disable-gpu-memory-buffer-video-frames "$@"
 "#,
     );
 
