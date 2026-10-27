@@ -3,7 +3,8 @@
 --remote-debugging-port, using only the standard library (a minimal WebSocket client for the
 DevTools protocol). Used to read YouTube's "stats for nerds" during device tests.
 
-Usage: cdp-eval.py PORT EXPRESSION
+Usage: cdp-eval.py PORT EXPRESSION [URL-SUBSTRING]
+The page is the first one whose URL contains URL-SUBSTRING, or the first page without it.
 """
 import base64
 import json
@@ -69,8 +70,9 @@ def ws_recv(sock):
 
 def main():
     port, expression = sys.argv[1], sys.argv[2]
+    match = sys.argv[3] if len(sys.argv) > 3 else ""
     targets = json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/json"))
-    page = next(t for t in targets if t.get("type") == "page")
+    page = next(t for t in targets if t.get("type") == "page" and match in t.get("url", ""))
     sock = ws_connect(page["webSocketDebuggerUrl"])
     ws_send(sock, json.dumps({"id": 1, "method": "Runtime.evaluate",
                               "params": {"expression": expression, "returnByValue": True}}))
