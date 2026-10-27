@@ -36,6 +36,7 @@ impl GlesTexture {
             y_inverted: false,
             size,
             egl_images: None,
+            memory_object: None,
             destruction_callback_sender: renderer.destruction_callback_sender.clone(),
         }))
     }
@@ -130,6 +131,9 @@ pub(super) struct GlesTextureInternal {
     pub(super) y_inverted: bool,
     pub(super) size: Size<i32, BufferCoord>,
     pub(super) egl_images: Option<Vec<EGLImage>>,
+    /// The GL memory object backing the texture (Local Desktop, `import_dmabuf_shared`); it must
+    /// outlive the texture, which loses its pages when the memory object is deleted.
+    pub(super) memory_object: Option<ffi::types::GLuint>,
     pub(super) destruction_callback_sender: Sender<CleanupResource>,
 }
 unsafe impl Send for GlesTextureInternal {}
@@ -157,6 +161,11 @@ impl Drop for GlesTextureInternal {
                     .destruction_callback_sender
                     .send(CleanupResource::EGLImage(image));
             }
+        }
+        if let Some(memory_object) = self.memory_object.take() {
+            let _ = self
+                .destruction_callback_sender
+                .send(CleanupResource::MemoryObject(memory_object));
         }
     }
 }

@@ -1,0 +1,5 @@
+# Probe binaries built by build.sh
+*
+!*.c
+!*.sh
+!.gitignore

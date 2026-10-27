@@ -13,6 +13,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -223,6 +224,40 @@ static int drm_version(int fd, unsigned long request, void *arg, int *rc) {
   return 1;
 }
 
+/* Turnip-KGSL allocates every shareable buffer (KWin's output buffers among them) from
+ * /dev/dma_heap/system. Android's Adreno driver, in the Local Desktop app, can texture from
+ * these buffers without copying them, but only when their last 8 KiB hold the metadata block it
+ * keeps there in its own exports; the app writes that block (smithay patch,
+ * GlesRenderer::import_dmabuf_shared). Give every allocation a page-aligned size plus those
+ * 8 KiB, which nothing in the guest uses: buffers are described by offset and stride. */
+struct dma_heap_alloc {
+  uint64_t len;
+  uint32_t fd;
+  uint32_t fd_flags;
+  uint64_t heap_flags;
+};
+#define DMA_HEAP_ALLOC _IOWR('H', 0x0, struct dma_heap_alloc)
+#define ADRENO_METADATA_AREA 8192
+
+static int is_dma_heap(int fd) {
+  static int state;
+  static dev_t heap_dev;
+  struct stat st;
+  if (state == 0) {
+    state = stat("/dev/dma_heap/system", &st) == 0 ? 1 : -1;
+    heap_dev = st.st_rdev;
+  }
+  /* All heaps share one major number. */
+  return state > 0 && fstat(fd, &st) == 0 && S_ISCHR(st.st_mode) && major(st.st_rdev) == major(heap_dev);
+}
+
+static void pad_dma_heap_alloc(int fd, unsigned long request, void *arg) {
+  if (request == DMA_HEAP_ALLOC && arg && is_dma_heap(fd)) {
+    struct dma_heap_alloc *alloc = arg;
+    alloc->len = ((alloc->len + 4095) & ~(uint64_t) 4095) + ADRENO_METADATA_AREA;
+  }
+}
+
 static void drm_lock_before_fork(void) { pthread_mutex_lock(&lock); }
 static void drm_unlock_after_fork(void) { pthread_mutex_unlock(&lock); }
 static void drm_reset_after_fork(void) { pthread_mutex_init(&lock, NULL); }
@@ -241,6 +276,7 @@ int ioctl(int fd, unsigned long request, ...) {
   if (bl_drm_gem_close(fd, request, arg, &rc) || drm_version(fd, request, arg, &rc)) {
     return rc;
   }
+  pad_dma_heap_alloc(fd, request, arg);
   static int (*fn)(int, unsigned long, ...);
   if (!fn) {
     fn = (int (*)(int, unsigned long, ...)) dlsym(RTLD_NEXT, "ioctl");

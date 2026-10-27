@@ -99,8 +99,9 @@ pub struct State {
 /// Offer zwp_linux_dmabuf_v1 so nested KWin can composite with OpenGL (Zink on Turnip/KGSL)
 /// instead of QPainter. KWin opens the main device named here, `/dev/kgsl-3d0`, which the
 /// guest sees as `/dev/dri/renderD0` (see `kgsl_render_node` in the proot setup). Android's
-/// EGL can't import dmabufs, so only linear single-plane buffers are offered: the renderer maps
-/// and uploads them (smithay patch, `GlesRenderer::import_dmabuf_by_copy`).
+/// EGL can't import dmabufs, so only linear single-plane buffers are offered: the renderer
+/// textures them in place through GL_EXT_memory_object_fd, or else maps and uploads them (smithay
+/// patch, `GlesRenderer::import_dmabuf_shared` and `import_dmabuf_by_copy`).
 fn create_dmabuf_global(
     dmabuf_state: &mut DmabufState,
     dh: &smithay::reexports::wayland_server::DisplayHandle,

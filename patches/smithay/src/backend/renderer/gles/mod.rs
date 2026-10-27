@@ -83,6 +83,7 @@ enum CleanupResource {
     Mapping(ffi::types::GLuint, *const std::ffi::c_void),
     Program(ffi::types::GLuint),
     Sync(ffi::types::GLsync),
+    MemoryObject(ffi::types::GLuint),
 }
 unsafe impl Send for CleanupResource {}
 
@@ -277,6 +278,8 @@ pub struct GlesRenderer {
     // caches
     buffers: Vec<GlesBuffer>,
     dmabuf_cache: std::collections::HashMap<WeakDmabuf, GlesTexture>,
+    /// Local Desktop: whether `import_dmabuf_shared` may be tried; cleared after a failure.
+    shared_dmabuf_import: bool,
     vbos: [ffi::types::GLuint; 2],
     vertices: Vec<f32>,
     non_opaque_damage: Vec<Rectangle<i32, Physical>>,
@@ -589,6 +592,17 @@ impl GlesRenderer {
             .insert_if_missing_threadsafe(|| RendererId(renderer_id::next()));
         drop(_guard);
 
+        // Local Desktop: see `import_dmabuf_shared`, only for EGLs without dmabuf import.
+        let shared_dmabuf_import = context.dmabuf_texture_formats().indexset().is_empty()
+            && !DISABLE_SHARED_DMABUF_IMPORT.load(std::sync::atomic::Ordering::Relaxed)
+            && exts.iter().any(|ext| ext == "GL_EXT_memory_object_fd")
+            && gl.CreateMemoryObjectsEXT.is_loaded()
+            && gl.ImportMemoryFdEXT.is_loaded()
+            && gl.TexStorageMem2DEXT.is_loaded();
+        if shared_dmabuf_import {
+            info!("dmabufs: zero-copy import through GL_EXT_memory_object_fd enabled");
+        }
+
         let renderer = GlesRenderer {
             gl,
             egl: context,
@@ -607,6 +621,7 @@ impl GlesRenderer {
 
             buffers: Vec::new(),
             dmabuf_cache: std::collections::HashMap::new(),
+            shared_dmabuf_import,
             vertices: Vec::with_capacity(6 * 16),
             non_opaque_damage: Vec::with_capacity(16),
             opaque_damage: Vec::with_capacity(16),
@@ -723,6 +738,9 @@ impl GlesRenderer {
                 CleanupResource::Sync(sync) => unsafe {
                     self.gl.DeleteSync(sync);
                 },
+                CleanupResource::MemoryObject(memory_object) => unsafe {
+                    self.gl.DeleteMemoryObjectsEXT(1, &memory_object);
+                },
             }
         }
     }
@@ -813,6 +831,7 @@ impl ImportMemWl for GlesRenderer {
                             y_inverted: false,
                             size: (width, height).into(),
                             egl_images: None,
+                            memory_object: None,
                             destruction_callback_sender: self.destruction_callback_sender.clone(),
                         });
                         if let Some(cache) = surface_lock.as_mut() {
@@ -983,6 +1002,7 @@ impl ImportMem for GlesRenderer {
                 y_inverted: flipped,
                 size,
                 egl_images: None,
+                memory_object: None,
                 destruction_callback_sender: self.destruction_callback_sender.clone(),
             }
         }));
@@ -1128,6 +1148,7 @@ impl ImportEgl for GlesRenderer {
             y_inverted: egl.y_inverted,
             size: egl.size,
             egl_images: Some(egl.into_images()),
+            memory_object: None,
             destruction_callback_sender: self.destruction_callback_sender.clone(),
         }));
 
@@ -1148,6 +1169,9 @@ impl ImportDma for GlesRenderer {
         // single-plane dmabufs (KWin rendering with Zink on Turnip/KGSL) are mapped and
         // uploaded like shm buffers instead.
         if self.egl.dmabuf_texture_formats().indexset().is_empty() {
+            if let Some(texture) = self.import_dmabuf_shared(buffer)? {
+                return Ok(texture);
+            }
             #[cfg(feature = "wayland_frontend")]
             return self.import_dmabuf_by_copy(buffer, None, &[]);
             #[cfg(not(feature = "wayland_frontend"))]
@@ -1179,6 +1203,7 @@ impl ImportDma for GlesRenderer {
                 y_inverted: buffer.y_inverted(),
                 size: buffer.size(),
                 egl_images: Some(vec![image]),
+                memory_object: None,
                 destruction_callback_sender: self.destruction_callback_sender.clone(),
             }));
             self.dmabuf_cache.insert(buffer.weak(), texture.clone());
@@ -1205,8 +1230,11 @@ impl ImportDmaWl for GlesRenderer {
     ) -> Result<GlesTexture, GlesError> {
         let dmabuf = crate::wayland::dmabuf::get_dmabuf(buffer)
             .expect("import_dma_buffer without checking buffer type?");
-        // Local Desktop: see `import_dmabuf_by_copy`.
+        // Local Desktop: see `import_dmabuf_shared` and `import_dmabuf_by_copy`.
         if self.egl.dmabuf_texture_formats().indexset().is_empty() {
+            if let Some(texture) = self.import_dmabuf_shared(dmabuf)? {
+                return Ok(texture);
+            }
             return self.import_dmabuf_by_copy(dmabuf, surface, damage);
         }
         self.import_dmabuf(dmabuf, Some(damage))
@@ -1224,6 +1252,111 @@ struct DmabufCopyCache(HashMap<usize, Arc<GlesTextureInternal>>);
 pub static DMABUF_COPY_PROBE: std::sync::OnceLock<
     fn(&[u8], usize, i32, i32, crate::backend::allocator::Fourcc),
 > = std::sync::OnceLock::new();
+
+/// Local Desktop: set before creating the renderer to keep dmabufs on the copy path
+/// (`import_dmabuf_by_copy`) instead of `import_dmabuf_shared`, e.g. for A/B measurements.
+pub static DISABLE_SHARED_DMABUF_IMPORT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Hands a linear single-plane dmabuf to `DMABUF_COPY_PROBE`, when one is set, through a
+/// temporary mapping (`import_dmabuf_shared` has none of its own).
+fn probe_dmabuf(buffer: &Dmabuf) {
+    use crate::backend::allocator::Buffer;
+    use std::os::unix::io::AsRawFd;
+    let Some(probe) = DMABUF_COPY_PROBE.get() else {
+        return;
+    };
+    let (Some(fd), Some(stride)) = (buffer.handles().next(), buffer.strides().next()) else {
+        return;
+    };
+    let size = buffer.size();
+    let len = stride as usize * size.h as usize;
+    let ptr = unsafe { libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ, libc::MAP_SHARED, fd.as_raw_fd(), 0) };
+    if ptr == libc::MAP_FAILED {
+        return;
+    }
+    probe(
+        unsafe { slice::from_raw_parts(ptr as *const u8, len) },
+        stride as usize,
+        size.w,
+        size.h,
+        buffer.format().code,
+    );
+    unsafe { libc::munmap(ptr, len) };
+}
+
+/// Bytes at the end of a dmabuf that `write_adreno_metadata` fills.
+const ADRENO_METADATA_AREA: usize = 8192;
+
+/// Writes the metadata block that Qualcomm's Adreno driver keeps at the end of the memory it
+/// exports as opaque fds (Vulkan `VK_KHR_external_memory_fd`, GL `GL_EXT_memory_object_fd`),
+/// describing a linear single-plane image of `stride * height` bytes at offset 0, into the last
+/// `ADRENO_METADATA_AREA` bytes of `fd` (`size` bytes long). The driver only imports memory
+/// carrying it. The layout was read off the driver's own exports (Adreno 740, driver 0676.77,
+/// Android 16; tools/android/vkimgtrailer.c): the block is the last 5300 bytes, all other words
+/// are zero, and only the creator's pid changes between exports. `code` is the driver's format
+/// number (0x57 B8G8R8A8, 0x1c R8G8B8A8).
+fn write_adreno_metadata(
+    fd: std::os::unix::io::RawFd,
+    size: usize,
+    stride: u32,
+    width: u32,
+    height: u32,
+    code: u32,
+) -> bool {
+    const BLOCK: u32 = 5300;
+    let data = (size - ADRENO_METADATA_AREA) as u32;
+    let ptr = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            ADRENO_METADATA_AREA,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            fd,
+            data as libc::off_t,
+        )
+    };
+    if ptr == libc::MAP_FAILED {
+        return false;
+    }
+    let area = unsafe { slice::from_raw_parts_mut(ptr as *mut u8, ADRENO_METADATA_AREA) };
+    area.fill(0);
+    let words: [(usize, u32); 28] = [
+        (2892, 1),
+        (2896, std::process::id()),
+        (2900, data + BLOCK),
+        (2908, 0x40),
+        (2912, code),
+        (2916, 1),
+        (2920, 1),
+        (2928, 1),
+        (2932, 1),
+        (2940, data),
+        (2948, 1),
+        (2960, data),
+        (2968, stride),
+        (2972, data),
+        (2980, 4),
+        (2984, width),
+        (2988, height),
+        (2992, stride / 4),
+        (2996, height),
+        (8152, 0x5143),
+        (8156, 6),
+        (8160, 0x0060_c510),
+        (8164, 0xc510_0014),
+        (8168, 4),
+        (8172, 1),
+        (8176, 1),
+        (8184, BLOCK),
+        (8188, 0xde5c_da7a),
+    ];
+    for (offset, value) in words {
+        area[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
+    }
+    unsafe { libc::munmap(ptr, ADRENO_METADATA_AREA) };
+    true
+}
 
 impl GlesRenderer {
     /// Upload a linear, single-plane dmabuf through a CPU mapping (Local Desktop, see
@@ -1306,6 +1439,7 @@ impl GlesRenderer {
                 y_inverted: buffer.y_inverted(),
                 size,
                 egl_images: None,
+                memory_object: None,
                 destruction_callback_sender: self.destruction_callback_sender.clone(),
             }));
             match surface_lock.as_mut() {
@@ -1383,6 +1517,128 @@ impl GlesRenderer {
         })();
         unsafe { libc::munmap(ptr, len) };
         result
+    }
+
+    /// Import a linear, single-plane dmabuf without copying it (Local Desktop): Android's EGL
+    /// can't import dmabufs, but its GL can texture from memory imported as an opaque fd
+    /// (`GL_EXT_memory_object_fd`) when the memory ends with the driver's metadata block (see
+    /// `write_adreno_metadata`). The guest's Turnip allocations carry an unused
+    /// `ADRENO_METADATA_AREA` at their end for it (kgsl-drm-shim pads them). The texture is the
+    /// client's buffer, so it is kept per dmabuf and needs no uploads. Returns `None` for
+    /// buffers this can't take, which then go through `import_dmabuf_by_copy`.
+    #[profiling::function]
+    fn import_dmabuf_shared(&mut self, buffer: &Dmabuf) -> Result<Option<GlesTexture>, GlesError> {
+        use crate::backend::allocator::{Buffer, Fourcc, Modifier};
+        use std::os::unix::io::AsRawFd;
+
+        if !self.shared_dmabuf_import {
+            return Ok(None);
+        }
+        if let Some(texture) = self.dmabuf_cache.get(&buffer.weak()) {
+            if texture.0.memory_object.is_some() {
+                let texture = texture.clone();
+                probe_dmabuf(buffer);
+                return Ok(Some(texture));
+            }
+        }
+        let format = buffer.format();
+        let code = match format.code {
+            Fourcc::Argb8888 | Fourcc::Xrgb8888 => 0x57,
+            Fourcc::Abgr8888 | Fourcc::Xbgr8888 => 0x1c,
+            _ => return Ok(None),
+        };
+        if buffer.num_planes() != 1
+            || !matches!(format.modifier, Modifier::Linear | Modifier::Invalid)
+            || buffer.offsets().next() != Some(0)
+        {
+            return Ok(None);
+        }
+        let (Some(fd), Some(stride)) = (buffer.handles().next(), buffer.strides().next()) else {
+            return Ok(None);
+        };
+        let size = buffer.size();
+        let (width, height) = (size.w as u32, size.h as u32);
+        let raw = fd.as_raw_fd();
+        let fd_size = unsafe { libc::lseek(raw, 0, libc::SEEK_END) };
+        if stride % 4 != 0
+            || stride < width * 4
+            || fd_size < 0
+            || (fd_size as usize) < stride as usize * height as usize + ADRENO_METADATA_AREA
+            || fd_size as usize % 4096 != 0
+        {
+            return Ok(None);
+        }
+        let fd_size = fd_size as usize;
+        if !write_adreno_metadata(raw, fd_size, stride, width, height, code) {
+            return Ok(None);
+        }
+
+        unsafe { self.egl.make_current()? };
+        let dup = unsafe { libc::fcntl(raw, libc::F_DUPFD_CLOEXEC, 0) };
+        if dup < 0 {
+            return Ok(None);
+        }
+        let (memory_object, tex, error) = unsafe {
+            while self.gl.GetError() != ffi::NO_ERROR {}
+            let mut memory_object = 0;
+            self.gl.CreateMemoryObjectsEXT(1, &mut memory_object);
+            let dedicated = ffi::TRUE as i32;
+            self.gl
+                .MemoryObjectParameterivEXT(memory_object, ffi::DEDICATED_MEMORY_OBJECT_EXT, &dedicated);
+            // The import owns `dup` from here on, even when it fails.
+            self.gl
+                .ImportMemoryFdEXT(memory_object, fd_size as u64, ffi::HANDLE_TYPE_OPAQUE_FD_EXT, dup);
+            let mut tex = 0;
+            self.gl.GenTextures(1, &mut tex);
+            self.gl.BindTexture(ffi::TEXTURE_2D, tex);
+            self.gl
+                .TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_TILING_EXT, ffi::LINEAR_TILING_EXT as i32);
+            self.gl.TexStorageMem2DEXT(
+                ffi::TEXTURE_2D,
+                1,
+                ffi::RGBA8,
+                width as i32,
+                height as i32,
+                memory_object,
+                0,
+            );
+            let error = self.gl.GetError();
+            self.gl
+                .TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_WRAP_S, ffi::CLAMP_TO_EDGE as i32);
+            self.gl
+                .TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_WRAP_T, ffi::CLAMP_TO_EDGE as i32);
+            self.gl.BindTexture(ffi::TEXTURE_2D, 0);
+            (memory_object, tex, error)
+        };
+        if error != ffi::NO_ERROR {
+            // The driver's metadata format differs from what `write_adreno_metadata` knows (a
+            // driver update?): keep every buffer on the copy path from now on.
+            warn!(
+                "dmabufs: zero-copy import failed (GL error {:#x}, {:?} {}x{} stride {} size {}); using copies",
+                error, format.code, width, height, stride, fd_size
+            );
+            unsafe {
+                self.gl.DeleteTextures(1, &tex);
+                self.gl.DeleteMemoryObjectsEXT(1, &memory_object);
+            }
+            self.shared_dmabuf_import = false;
+            return Ok(None);
+        }
+        let texture = GlesTexture(Arc::new(GlesTextureInternal {
+            texture: tex,
+            sync: RwLock::default(),
+            format: Some(ffi::RGBA8),
+            has_alpha: has_alpha(format.code),
+            is_external: false,
+            y_inverted: buffer.y_inverted(),
+            size,
+            egl_images: None,
+            memory_object: Some(memory_object),
+            destruction_callback_sender: self.destruction_callback_sender.clone(),
+        }));
+        self.dmabuf_cache.insert(buffer.weak(), texture.clone());
+        probe_dmabuf(buffer);
+        Ok(Some(texture))
     }
 
     #[profiling::function]

@@ -234,6 +234,17 @@ pub fn bind(event_loop: &ActiveEventLoop) -> Result<WinitGraphicsBackend<GlesRen
         platform => return Err(format!("Unsupported platform: {:?}", platform)),
     };
 
+    // KWin's buffers are textured in place (smithay patch, `GlesRenderer::import_dmabuf_shared`);
+    // `run-as app.polarbear touch files/dmabuf-copy` before the app starts keeps the CPU copies
+    // instead, for A/B measurements.
+    if crate::android::utils::application_context::get_application_context()
+        .data_dir
+        .join("dmabuf-copy")
+        .exists()
+    {
+        smithay::backend::renderer::gles::DISABLE_SHARED_DMABUF_IMPORT
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     let renderer = unsafe { GlesRenderer::new(context) }
         .map_err(|error| format!("Failed to create GLES Renderer: {error}"))?;
     let damage_tracking = display.supports_damage();
