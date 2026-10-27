@@ -6,10 +6,14 @@
 //! rendering and the buffer swap took. Read with
 //! `adb logcat | grep frame-stats`; SurfaceFlinger's `--latency` covers what reached the screen.
 //!
-//! It also counts `green` frames: KWin frames (dmabufs the app copies) in which at least a
-//! quarter of a 32x18 sample grid is saturated green. That is what an unfinished YUV video frame
-//! turns into (all-zero YUV is RGB ~(0,135,0) in BT.601, ~(0,77,0) in BT.709), so it shows a
-//! frame handed over before the GPU finished it. Each such frame is also logged on its own.
+//! It also counts `green` frames: KWin frames (dmabufs the app copies) in which at least a tenth
+//! of a 32x18 sample grid has no red or blue but some green. That is what a YUV video frame turns
+//! into when its chroma reads as zero instead of 128: red and blue clamp to 0 and green becomes
+//! the luma plus ~135 (BT.601; ~77 in BT.709), so the picture shows in green only, from (0,135,0)
+//! where it is black up to (0,255,0) where it is bright. Brave's green flashes are this (a
+//! screen recording of the grayscale test video, 2026-10-27). A tenth, not more, because a video
+//! that is not fullscreen covers only part of the screen. Each such frame is also logged on its
+//! own.
 //!
 //! For the synctest client (/root/synctest: solid frames cycling red, green, blue, slow to draw)
 //! it counts `mixed` frames (more than one of the three colours: partly drawn when read) and
@@ -37,7 +41,7 @@ static SYNC_LAST: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new
 
 const GRID: (usize, usize) = (32, 18);
 /// A frame counts as green when this share of the grid is (in percent).
-const GREEN_PERCENT: usize = 25;
+const GREEN_PERCENT: usize = 10;
 
 /// Upper bounds (ms) of the buckets for gaps between new buffers during animations.
 const GAP_BUCKETS: [u64; 7] = [9, 13, 18, 25, 34, 50, 100];
@@ -98,6 +102,9 @@ fn probe_frame(pixels: &[u8], stride: usize, width: i32, height: i32, format: Fo
         return;
     }
     let mut green = 0;
+    // Green samples below saturation: a video's picture always has some, synctest's solid pure
+    // green frames have none.
+    let mut shaded_green = 0;
     // Samples that are synctest's pure red, green or blue.
     let mut primaries = [0usize; 3];
     for row in 0..GRID.1 {
@@ -108,8 +115,11 @@ fn probe_frame(pixels: &[u8], stride: usize, width: i32, height: i32, format: Fo
                 return;
             };
             let (r, g, b) = (pixel[red], pixel[1], pixel[blue]);
-            if r < 16 && b < 16 && (48..=180).contains(&g) {
+            if r < 16 && b < 16 && g >= 48 {
                 green += 1;
+                if g < 240 {
+                    shaded_green += 1;
+                }
             }
             match (r > 230, g > 230, b > 230, r < 25, g < 25, b < 25) {
                 (true, _, _, _, true, true) => primaries[0] += 1,
@@ -122,7 +132,7 @@ fn probe_frame(pixels: &[u8], stride: usize, width: i32, height: i32, format: Fo
     PROBED.fetch_add(1, Ordering::Relaxed);
     let samples = GRID.0 * GRID.1;
     probe_synctest(primaries, samples);
-    if green * 100 >= samples * GREEN_PERCENT {
+    if green * 100 >= samples * GREEN_PERCENT && shaded_green > 0 {
         GREEN.fetch_add(1, Ordering::Relaxed);
         let total = GREEN_TOTAL.fetch_add(1, Ordering::Relaxed) + 1;
         log::warn!(

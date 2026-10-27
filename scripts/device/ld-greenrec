@@ -1,0 +1,74 @@
+#!/bin/sh
+# Ground truth for the frame-stats green detector: plays the grayscale test video in Brave (via
+# ld-greentest, plasmashell's environment), records the inner display with Android's screenrecord
+# meanwhile, then finds every recorded frame with green in it (in a grayscale video any pixel
+# with G above both R and B by more than 40 is an artifact) and lists them next to the
+# detector's GREEN frames from the same run. Results in ~/localdesktop-bench/greenrec-<label>/.
+# Usage: ld-greenrec <label> [record seconds, default 45]
+set -eu
+LABEL=$1; REC=${2:-45}
+D=~/localdesktop-bench/greenrec-$LABEL; rm -rf "$D"; mkdir -p "$D"
+HERE=$(dirname "$0")
+SHELL_ENV=1 "$HERE"/ld-greentest "rec-$LABEL" $((REC + 35)) > "$D/greentest.txt" 2>&1 &
+TEST=$!
+sleep 22
+adb shell 'date "+%m-%d %H:%M:%S.%N"' | tr -d '\r' > "$D/rec-start.txt"
+adb shell screenrecord --display-id 4630947175568309891 --bit-rate 40000000 --time-limit "$REC" /sdcard/ld-greenrec.mp4
+adb pull -q /sdcard/ld-greenrec.mp4 "$D/rec.mp4"
+adb shell rm -f /sdcard/ld-greenrec.mp4
+wait $TEST || true
+cp ~/localdesktop-bench/green-rec-$LABEL.log "$D/frame-stats.log"
+ffprobe -v error -select_streams v -show_entries frame=pts_time -of csv=p=0 "$D/rec.mp4" > "$D/pts.txt"
+python3 -I - "$D" <<'PY'
+import sys, subprocess, numpy as np, datetime as dt, re
+d = sys.argv[1]
+W, H = 544, 453
+pts = [float(l) for l in open(d + '/pts.txt') if l.strip()]
+# Frames are decoded one at a time: a whole recording does not fit in memory.
+ff = subprocess.Popen(['ffmpeg', '-v', 'quiet', '-i', d + '/rec.mp4', '-fps_mode', 'passthrough', '-vf', f'scale={W}:{H}',
+                       '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], stdout=subprocess.PIPE)
+start = dt.datetime.strptime('2000-' + open(d + '/rec-start.txt').read().strip()[:21], '%Y-%m-%d %H:%M:%S.%f')
+hits, shots, count = [], {}, 0
+while True:
+    buf = ff.stdout.read(W * H * 3)
+    if len(buf) < W * H * 3:
+        break
+    f = np.frombuffer(buf, np.uint8).reshape(H, W, 3)
+    r, g, b = (f[..., c].astype(np.int16) for c in range(3))
+    share = float(((g - np.maximum(r, b)) > 40).mean())
+    if share > 0.002:
+        hits.append((count, share))
+        if len(shots) < 6:
+            shots[count] = f.copy()
+    count += 1
+ff.wait()
+det = []
+for l in open(d + '/frame-stats.log'):
+    m = re.match(r'(\d\d-\d\d \d\d:\d\d:\d\d\.\d+).*GREEN frame #\d+: (\d+)%', l)
+    if m:
+        t = (dt.datetime.strptime('2000-' + m.group(1), '%Y-%m-%d %H:%M:%S.%f') - start).total_seconds()
+        if 0 <= t <= pts[-1] + 1:
+            det.append((t, int(m.group(2))))
+with open(d + '/summary.txt', 'w') as out:
+    def say(s):
+        print(s); out.write(s + '\n')
+    say(f'recorded frames: {count} over {pts[-1]:.1f} s')
+    # Green frames less than 0.1 s apart are one event (a flash that stays for a few refreshes).
+    events = []
+    for i, s in hits:
+        t = pts[i] if i < len(pts) else -1
+        if events and t - events[-1][1] <= 0.1:
+            events[-1][1] = t
+            events[-1][2] = max(events[-1][2], s)
+        else:
+            events.append([t, t, s])
+    say(f'recorded frames with green: {len(hits)}, in {len(events)} events')
+    for a, b, s in events[:40]:
+        say(f'  t={a:7.3f}s  {(b - a) * 1000:4.0f} ms  green area up to {s * 100:5.1f}%')
+    say(f'detector GREEN frames in the same span: {len(det)} (its times run ~0.3 s later: screenrecord starts late)')
+    for t, p in det[:40]:
+        say(f'  t={t:7.3f}s  {p}% of samples')
+from PIL import Image
+for i, f in shots.items():
+    Image.fromarray(f).save(f'{d}/hit-{i}.png')
+PY
