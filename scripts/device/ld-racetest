@@ -1,0 +1,39 @@
+#!/bin/sh
+# Tearing test for buffers the app samples in place (zero-copy dmabuf import): runs synctest with a
+# light shader (fast frames) for 30 s, screen-records 20 s of it, and checks every recorded frame
+# for two synctest colours at once (a frame KWin redrew while the app was still sampling it, or a
+# partly drawn one). Usage: ld-racetest <label> [shader iterations, default 50] [gpuload|shade]
+#   gpuload: guest GPU load (/tmp/gpuload, guest/tools/gpuload.c) delays the app's GPU work.
+#   shade:   six Android notification-shade pulls during the recording.
+# Results go to ~/localdesktop-bench/race-<label>/. Needs ffmpeg and python3-numpy on the PC.
+set -u
+LABEL=$1; ITER=${2:-50}; EXTRA=${3:-}
+D=~/localdesktop-bench/race-$LABEL; rm -rf "$D"; mkdir -p "$D"
+B=$(dirname "$0")
+adb shell "run-as app.polarbear cat files/arch/etc/localdesktop/build-id" 2>/dev/null | tr -d "\r" > "$D/build-id"
+echo "build: $(cat "$D/build-id")"
+[ "$EXTRA" = gpuload ] && ( "$B"/ld-run '/tmp/gpuload 35 200 10 >/dev/null 2>&1' 60 >/dev/null & )
+( sleep 8; adb shell screenrecord --time-limit 20 --display-id 4630947175568309891 /data/local/tmp/race.mp4 ) &
+if [ "$EXTRA" = shade ]; then
+    ( sleep 9; for i in 1 2 3 4 5 6; do adb shell cmd statusbar expand-notifications; sleep 1; adb shell cmd statusbar collapse; sleep 1.5; done ) &
+fi
+"$B"/ld-synctest "race-$LABEL" 30 "$ITER" 2>&1 | grep -E 'synctest: [0-9]+ frames|== ' | tee "$D/synctest.txt"
+wait
+adb pull /data/local/tmp/race.mp4 "$D/race.mp4" >/dev/null
+# One frame at a time: the decoded recording is ~1.7 GB.
+ffmpeg -v error -i "$D/race.mp4" -vf scale=544:453 -f rawvideo -pix_fmt rgb24 - | python3 -I -c '
+import sys, numpy as np
+W, H = 544, 453
+n = mixed = coloured = 0
+while True:
+    b = sys.stdin.buffer.read(W * H * 3)
+    if len(b) < W * H * 3: break
+    f = np.frombuffer(b, np.uint8).reshape(H, W, 3).astype(np.int16)
+    r, g, bl = f[..., 0], f[..., 1], f[..., 2]
+    c = [int(((r > 180) & (g < 70) & (bl < 70)).sum()), int(((g > 180) & (r < 70) & (bl < 70)).sum()),
+         int(((bl > 180) & (r < 70) & (g < 70)).sum())]
+    if max(c) > 1500: coloured += 1
+    if sum(1 for x in c if x > 1500) >= 2: mixed += 1; print("mixed frame", n, c)
+    n += 1
+print(f"== recorded frames {n}, with a synctest colour {coloured}, mixed {mixed}")
+' | tee "$D/mixcheck.txt" | tail -5
