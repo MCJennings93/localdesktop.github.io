@@ -21,7 +21,9 @@ fi
 wait
 adb pull /data/local/tmp/race.mp4 "$D/race.mp4" >/dev/null
 # One frame at a time: the decoded recording is ~1.7 GB.
-ffmpeg -v error -i "$D/race.mp4" -vf scale=544:453 -f rawvideo -pix_fmt rgb24 - | python3 -I -c '
+# passthrough: only the recorded frames. screenrecord can write a 90000/s rate into the header, and
+# constant-rate output would then pad 20 s with ~1.8 M duplicates.
+ffmpeg -v error -i "$D/race.mp4" -fps_mode passthrough -vf scale=544:453 -f rawvideo -pix_fmt rgb24 - | python3 -I -c '
 import sys, numpy as np
 W, H = 544, 453
 n = mixed = coloured = 0
