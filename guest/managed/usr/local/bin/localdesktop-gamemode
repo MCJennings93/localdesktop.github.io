@@ -9,17 +9,22 @@
 # Output goes to /tmp/gamemode.log.
 exec >>/tmp/gamemode.log 2>&1
 echo "== $(date '+%F %T') localdesktop-gamemode $*"
+FLAG=/run/localdesktop-pad/gamemode
+# gamescope's pid is in $FLAG while it runs (its process is named gamescope-wl, not gamescope).
+running() {
+    pid=$(cat "$FLAG" 2>/dev/null) && [ -n "$pid" ] && case "$(cat "/proc/$pid/comm" 2>/dev/null)" in gamescope*) true ;; *) false ;; esac
+}
 # --restart ends a running Game Mode first (Steam shuts down, gamescope ends with it).
 if [ "${1:-}" = --restart ]; then
     shift
-    if pgrep -x gamescope >/dev/null; then
+    if running; then
         localdesktop-steam --shutdown
         n=0
-        while pgrep -x gamescope >/dev/null && [ "$n" -lt 30 ]; do sleep 1; n=$((n + 1)); done
-        pkill -x gamescope 2>/dev/null
+        while running && [ "$n" -lt 30 ]; do sleep 1; n=$((n + 1)); done
+        running && kill "$pid"
     fi
 fi
-if pgrep -x gamescope >/dev/null; then
+if running; then
     echo "== gamescope is already running"
     # A steam:// link goes to the running client.
     [ $# -gt 0 ] && exec localdesktop-steam "$@"
@@ -33,7 +38,7 @@ panel=${panel:-1920x1080}
 size=${LOCALDESKTOP_GAMEMODE_SIZE:-$panel}
 echo "== panel $panel, games at $size"
 # The app shows its on-screen gamepad while this pid (gamescope, after exec) is alive.
-mkdir -p /run/localdesktop-pad && echo $$ > /run/localdesktop-pad/gamemode
+mkdir -p /run/localdesktop-pad && echo $$ > "$FLAG"
 exec gamescope --backend wayland --expose-wayland -f -e \
     -W "${panel%x*}" -H "${panel#*x}" -w "${size%x*}" -h "${size#*x}" \
     --default-touch-mode 4 \
