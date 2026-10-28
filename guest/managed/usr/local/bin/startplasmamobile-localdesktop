@@ -66,6 +66,8 @@ export QT_FORCE_STDERR_LOGGING=1
 # loopback-owner records who owns each loopback TCP connection for /usr/local/bin/lsof (Steam),
 # which must stand in for /usr/bin/lsof (the pacman hook keeps it there across lsof upgrades).
 /usr/local/libexec/localdesktop-lsof-divert || true
+# Packages the APK ships (our gamescope and what it needs), installed offline when they change.
+/usr/local/bin/localdesktop-packages || true
 # The emulated Steam Deck controller's sysfs entries and state ring (see localdesktop-pad).
 /usr/local/bin/localdesktop-pad setup || true
 export LD_PRELOAD="/usr/local/lib/udev-netlink-shim.so /usr/local/lib/memfd-reopen-shim.so /usr/local/lib/segvbt.so /usr/local/lib/loopback-owner.so$GPU_PRELOAD"

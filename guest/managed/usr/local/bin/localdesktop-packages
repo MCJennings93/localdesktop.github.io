@@ -1,0 +1,27 @@
+#!/bin/sh
+# Installs the packages the APK ships in /usr/local/share/localdesktop/packages (guest/blobs/packages)
+# whose version is not installed yet, offline with pacman -U: our gamescope (guest/pkgbuilds/gamescope)
+# and the libraries it needs that the base guest lacks. Run at session start.
+# Our gamescope carries patches, so it is kept out of pacman -Syu (IgnorePkg); Arch's would replace it.
+DIR=/usr/local/share/localdesktop/packages
+want=
+for f in "$DIR"/*.pkg.tar.*; do
+    [ -f "$f" ] || continue
+    info=$(bsdtar -xOf "$f" .PKGINFO) || continue
+    name=$(printf '%s\n' "$info" | sed -n 's/^pkgname = //p')
+    version=$(printf '%s\n' "$info" | sed -n 's/^pkgver = //p')
+    [ "$(pacman -Q "$name" 2>/dev/null | cut -d' ' -f2)" = "$version" ] || want="$want $f"
+done
+if [ -n "$want" ]; then
+    echo "localdesktop-packages: installing$want"
+    # shellcheck disable=SC2086
+    pacman -U --noconfirm --noprogressbar $want
+fi
+conf=/etc/pacman.conf
+if ! grep -Eq '^IgnorePkg *=.*(^|[ =])gamescope( |$)' "$conf"; then
+    if grep -q '^IgnorePkg *=' "$conf"; then
+        sed -i 's/^\(IgnorePkg *=.*\)$/\1 gamescope/' "$conf"
+    else
+        sed -i 's/^\[options\]$/[options]\nIgnorePkg = gamescope/' "$conf"
+    fi
+fi

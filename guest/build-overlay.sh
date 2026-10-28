@@ -17,6 +17,9 @@ trap 'rm -rf "$TMP"' EXIT
 cp "$HERE/blobs/turnip-kgsl.tar.xz" "$ASSETS/turnip-kgsl.tar.xz"
 sha256sum "$HERE/blobs/turnip-kgsl.tar.xz" | cut -d' ' -f1 > "$TMP/turnip-kgsl.sha256"
 cp -a "$HERE/managed" "$HERE/seed" "$TMP/"
+# Packages localdesktop-packages installs at session start (guest/blobs/packages).
+mkdir -p "$TMP/managed/usr/local/share/localdesktop/packages"
+cp "$HERE"/blobs/packages/*.pkg.tar.* "$TMP/managed/usr/local/share/localdesktop/packages/"
 BUILD_ID=${BUILD_ID:-dev-$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)}
 mkdir -p "$TMP/managed/etc/localdesktop"
 echo "$BUILD_ID" > "$TMP/managed/etc/localdesktop/build-id"

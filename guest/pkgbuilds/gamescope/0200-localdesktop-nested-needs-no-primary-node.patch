@@ -1,0 +1,16 @@
+diff --git a/src/rendervulkan.cpp b/src/rendervulkan.cpp
+index fa44e1d..9377c7e 100644
+--- a/src/rendervulkan.cpp
++++ b/src/rendervulkan.cpp
+@@ -478,7 +478,10 @@ bool CVulkanDevice::createDevice()
+ 		};
+ 		vk.GetPhysicalDeviceProperties2( physDev(), &props2 );
+ 
+-		if ( !GetBackend()->UsesVulkanSwapchain() && !drmProps.hasPrimary ) {
++		// Only a session-based backend (DRM) scans out through the primary node. A nested one
++		// (Wayland) only needs the render node, and a GPU exposed to a container may have no
++		// primary node at all (Turnip on KGSL behind a bound render node).
++		if ( !GetBackend()->UsesVulkanSwapchain() && GetBackend()->IsSessionBased() && !drmProps.hasPrimary ) {
+ 			vk_log.errorf( "physical device has no primary node" );
+ 			return false;
+ 		}

@@ -1,0 +1,145 @@
+# Arch Linux's gamescope 3.16.29-1 packaging, built for aarch64 by guest/pkgbuilds/build.sh with:
+# - 0002-0122: DroidDeck's gamescope patches (Droid-Deck/DroidDeck 4f58230a tools/gamescope/patches,
+#   GPL-3.0; see its PATCHES.md), unchanged;
+# - 0200: ours (a nested backend needs no DRM primary node).
+# Applied in name order after Arch's prepare().
+# Maintainer: Maxime Gauduin <alucryd@archlinux.org>
+# Maintainer: Giancarlo Razzolini <grazzolini@archlinux.org>
+# Maintainer: Sven-Hendrik Haase <svenstaro@archlinux.org>
+# Contributor: Samuel "scrufulufugus" Monson <smonson@irbash.net>
+# Contributor: PedroHLC <root@pedrohlc.com>
+
+pkgname=gamescope
+pkgver=3.16.29
+pkgrel=1
+pkgdesc='SteamOS session compositing window manager'
+arch=(x86_64 aarch64)
+url=https://github.com/ValveSoftware/gamescope
+license=(
+  BSD-2-Clause
+  BSD-3-Clause
+  LicenseRef-Reshade
+)
+depends=(
+  glibc
+  libstdc++
+  libgcc
+  lcms2
+  libavif
+  libcap.so
+  libdecor
+  libdrm
+  libei
+  libinput
+  libpipewire-0.3.so
+  libx11
+  libxcb
+  libxcomposite
+  libxcursor
+  libxdamage
+  libxext
+  libxfixes
+  libxi
+  libxkbcommon.so
+  libxmu
+  libxrender
+  libxres
+  libxtst
+  libxxf86vm
+  luajit
+  pixman
+  sdl2
+  seatd
+  systemd-libs
+  vulkan-icd-loader
+  wayland
+  xcb-util-errors
+  xcb-util-wm
+  xorg-server-xwayland
+)
+makedepends=(
+  benchmark
+  cmake
+  git
+  glslang
+  meson
+  ninja
+  vulkan-headers
+  wayland-protocols
+  catch2
+)
+source=(
+  git+https://github.com/ValveSoftware/gamescope.git#commit=${pkgver}
+  git+https://gitlab.freedesktop.org/emersion/libdisplay-info.git
+  git+https://gitlab.freedesktop.org/emersion/libliftoff.git
+  git+https://github.com/ValveSoftware/openvr.git
+  git+https://github.com/Joshua-Ashton/reshade.git
+  git+https://github.com/KhronosGroup/SPIRV-Headers.git
+  git+https://github.com/Joshua-Ashton/vkroots.git
+  git+https://gitlab.freedesktop.org/wlroots/wlroots.git
+)
+b2sums=('1cffbc0ae2bde5b6cfa3fbd99223819795ef4e15ed11f5d939c5590de5ac71eed5b3cbe3630645ce9a57c13029a5029a0a206957660e712879dcc95e3d2e925a'
+        'SKIP'
+        'SKIP'
+        'SKIP'
+        'SKIP'
+        'SKIP'
+        'SKIP'
+        'SKIP')
+
+source+=(
+  0002-steamcompmgr-fallback-appid-focus.patch
+  0009-fix-arm64-steam-night-mode.patch
+  0019-steamcompmgr-arm64-virtual-white.patch
+  0020-color-p3-red-is-wide-gamut.patch
+  0100-realtime-queue-and-gamepad-cursor.patch
+  0101-nested-wayland-cursor-routing.patch
+  0110-wayland-backend-touch.patch
+  0111-wayland-pointer-warps-in-passthrough.patch
+  0112-restore-iconified-game-on-resume.patch
+  0114-take-override-redirect-from-mapnotify.patch
+  0115-limiter-paces-per-window.patch
+  0116-hold-overlay-repaint-for-next-frame.patch
+  0116-release-cursor-shm-buffers.patch
+  0117-wsi-cache-present-bypass-check.patch
+  0118-wayland-signed-plane-positions.patch
+  0119-wsi-default-images-under-limiter.patch
+  0120-nested-refresh-follows-host.patch
+  0121-override-content-skip-toplevel-walk.patch
+  0122-wayland-wake-after-host-events.patch
+  0200-localdesktop-nested-needs-no-primary-node.patch
+)
+b2sums+=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+
+prepare() {
+  cd gamescope
+
+  meson subprojects download
+
+  for submodule in src/reshade subprojects/{libdisplay-info,libliftoff,openvr,vkroots,wlroots} thirdparty/SPIRV-Headers; do
+    git submodule init ${submodule}
+    git config submodule.${submodule}.url ../${submodule##*/}
+  done
+  git -c protocol.file.allow=always submodule update
+
+  local p
+  for p in "$srcdir"/*.patch; do
+    echo "applying ${p##*/}"
+    patch -p1 --no-backup-if-mismatch < "$p"
+  done
+}
+
+build() {
+  arch-meson gamescope build \
+    -Dforce_fallback_for=glm,stb,libdisplay-info,libliftoff,vkroots \
+    -Dpipewire=enabled
+  meson compile -C build
+}
+
+package() {
+  DESTDIR="${pkgdir}" meson install -C build \
+    --skip-subprojects
+  install -Dm 644 gamescope/LICENSE -t "${pkgdir}"/usr/share/licenses/gamescope/
+}
+
+# vim: ts=2 sw=2 et:
