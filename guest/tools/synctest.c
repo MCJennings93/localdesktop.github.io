@@ -4,6 +4,9 @@
 // shows a mix of colours (a partly drawn frame) or the previous frame's colour (a stale one);
 // Local Desktop's frame-stats probe counts both.
 // Usage: synctest [seconds, default 30] [shader iterations, default 400] [passes per frame, default 1]
+//                 [ramp steps, default 0]
+// With ramp steps N > 1, frame k is grey level (k mod N)/(N-1) instead: frames shown in order only
+// ever step forward through the ramp (skipping some), so a recording shows any out-of-order frame.
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
 #include <stdio.h>
@@ -95,6 +98,7 @@ int main(int argc, char **argv) {
   int seconds = argc > 1 ? atoi(argv[1]) : 30;
   int iterations = argc > 2 ? atoi(argv[2]) : 400;
   int passes = argc > 3 ? atoi(argv[3]) : 1;
+  int ramp = argc > 4 ? atoi(argv[4]) : 0;
   struct wl_display *display = wl_display_connect(NULL);
   if (!display) {
     fprintf(stderr, "no Wayland display\n");
@@ -153,7 +157,12 @@ int main(int argc, char **argv) {
       wl_egl_window_resize(window, width, height, 0, 0);
     }
     glViewport(0, 0, width, height);
-    glUniform3fv(color_location, 1, colors[frames % 3]);
+    if (ramp > 1) {
+      GLfloat grey = (GLfloat)(frames % ramp) / (ramp - 1);
+      glUniform3f(color_location, grey, grey, grey);
+    } else {
+      glUniform3fv(color_location, 1, colors[frames % 3]);
+    }
     for (int pass = 0; pass < passes; pass++) glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     eglSwapBuffers(egl, egl_surface);
     frames++;

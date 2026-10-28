@@ -1,0 +1,44 @@
+#!/bin/sh
+# Frame-order test: runs /root/synctest in ramp mode (frame k is grey level k mod 16) on the desktop
+# or inside a nested gamescope, screen-records 15 s of it, and checks that the recorded grey level
+# only ever steps forward (mod 16). A backward step is a frame shown after a newer one: the
+# "shaking" seen through gamescope. Usage: ld-ordertest <label> [desktop|gamescope] [env assignments...]
+# Results go to ~/localdesktop-bench/order-<label>/. Needs ffmpeg and python3-numpy on the PC.
+LABEL=${1:?label}; MODE=${2:-desktop}; shift 2 2>/dev/null; ENVS="$*"
+B=$(dirname "$0"); D=~/localdesktop-bench/order-$LABEL; mkdir -p "$D"
+RAMP=16; SECS=25
+SYNC="cd /root/synctest; env $ENVS ./synctest $SECS 50 1 $RAMP"
+if [ "$MODE" = gamescope ]; then
+    RUN="gamescope --backend wayland --expose-wayland -f -W 2176 -H 1811 -w 1280 -h 720 -- sh -c '$SYNC'"
+else
+    RUN="sh -c '$SYNC'"
+fi
+echo "== $LABEL: $MODE, env [$ENVS]" | tee "$D/info.txt"
+"$B"/ld-exec 'cat /etc/localdesktop/build-id' 2>/dev/null | grep -v "proot warning" | sed "s/^/build: /" | tee -a "$D/info.txt"
+( sleep 6; adb shell screenrecord --time-limit 15 --display-id 4630947175568309891 /data/local/tmp/order.mp4 ) &
+"$B"/ld-run "P=\$(pgrep -x plasmashell | head -1); cd /; xargs -0 -a /proc/\$P/environ sh -c \"exec env -i \\\"\\\$@\\\" timeout $((SECS + 5)) $RUN\" sh 2>&1 | grep -E 'synctest:|Error|error' | head -5" $((SECS + 40)) | tee -a "$D/info.txt"
+wait
+adb pull /data/local/tmp/order.mp4 "$D/order.mp4" >/dev/null
+ffmpeg -v error -i "$D/order.mp4" -fps_mode passthrough -vf scale=544:453 -f rawvideo -pix_fmt rgb24 - | python3 -I -c '
+import sys, numpy as np
+W, H, N = 544, 453, '"$RAMP"'
+levels, n = [], 0
+while True:
+    b = sys.stdin.buffer.read(W * H * 3)
+    if len(b) < W * H * 3: break
+    f = np.frombuffer(b, np.uint8).reshape(H, W, 3).astype(np.float32)
+    c = f[H // 2 - 40:H // 2 + 40, W // 2 - 40:W // 2 + 40]
+    spread = float(c.max() - c.min())
+    grey = float(c.mean())
+    levels.append((round(grey / 255 * (N - 1)), spread))
+    n += 1
+steps = forward = back = repeat = mixed = 0
+for (a, sa), (b, sb) in zip(levels, levels[1:]):
+    if sa > 40 or sb > 40: mixed += 1; continue
+    d = (b - a) % N
+    steps += 1
+    if d == 0: repeat += 1
+    elif d <= N // 2: forward += 1
+    else: back += 1
+print(f"== recorded frames {n}: steps {steps}, forward {forward}, repeated {repeat}, BACKWARD {back}, non-uniform {mixed}")
+' | tee "$D/order.txt"
