@@ -40,3 +40,10 @@ loaded.
 
 Build with `./build-patched.sh` (Android NDK r27c at `$NDK`, default `~/Android/android-ndk-r27c`).
 It writes `libproot.so` and `libproot_loader.so`, 16 KB aligned, into `assets/libs/arm64-v8a/`.
+
+`patches/0019-localdesktop-execveat-absolute-path.patch` is ours too. proot turned every
+`execveat()` whose fd is not `AT_FDCWD` into `ENOSYS`, but the kernel ignores the fd when the
+path is absolute (and `AT_EMPTY_PATH` is not set), so such a call is an `execve()`. FEX starts
+every x86 child process as `execveat(<loader fd>, "/proc/self/exe", ...)`, so under proot no x86
+program could start another (games' launcher scripts failed with "Function not implemented").
+DroidDeck works around the same thing in a session preload (`robust.c`); here proot handles it.

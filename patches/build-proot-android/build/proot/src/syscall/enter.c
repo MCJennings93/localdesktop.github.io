@@ -129,8 +129,15 @@ int translate_syscall_enter(Tracee *tracee)
 		status = translate_execve_enter(tracee);
 		break;
 
-	case PR_execveat:
-		if ((int) peek_reg(tracee, CURRENT, SYSARG_1) == AT_FDCWD) {
+	case PR_execveat: {
+		/* The kernel ignores the fd for an absolute path (unless AT_EMPTY_PATH with an empty one),
+		 * so that execveat() is an execve(). FEX execs "/proc/self/exe" this way with its loader fd. */
+		char first = 0;
+		bool absolute = (peek_reg(tracee, CURRENT, SYSARG_5) & AT_EMPTY_PATH) == 0
+			&& read_data(tracee, &first, peek_reg(tracee, CURRENT, SYSARG_2), 1) == 0
+			&& first == '/';
+
+		if ((int) peek_reg(tracee, CURRENT, SYSARG_1) == AT_FDCWD || absolute) {
 			set_sysnum(tracee, PR_execve);
 			poke_reg(tracee, SYSARG_1, peek_reg(tracee, CURRENT, SYSARG_2));
 			poke_reg(tracee, SYSARG_2, peek_reg(tracee, CURRENT, SYSARG_3));
@@ -142,6 +149,7 @@ int translate_syscall_enter(Tracee *tracee)
 		}
 		status = translate_execve_enter(tracee);
 		break;
+	}
 
 	case PR_ptrace:
 		status = translate_ptrace_enter(tracee);
