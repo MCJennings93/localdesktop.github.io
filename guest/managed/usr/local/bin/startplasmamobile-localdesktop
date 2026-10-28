@@ -63,7 +63,10 @@ export QT_FORCE_STDERR_LOGGING=1
 # Android also forbids reopening a memfd through /proc/self/fd, which Firefox needs (see
 # /usr/local/src/memfd-reopen-shim.c). segvbt prints a backtrace on crashes (gdb/strace cannot
 # attach under proot).
-export LD_PRELOAD="/usr/local/lib/udev-netlink-shim.so /usr/local/lib/memfd-reopen-shim.so /usr/local/lib/segvbt.so$GPU_PRELOAD"
+# loopback-owner records who owns each loopback TCP connection for /usr/local/bin/lsof (Steam),
+# which must stand in for /usr/bin/lsof (the pacman hook keeps it there across lsof upgrades).
+/usr/local/libexec/localdesktop-lsof-divert || true
+export LD_PRELOAD="/usr/local/lib/udev-netlink-shim.so /usr/local/lib/memfd-reopen-shim.so /usr/local/lib/segvbt.so /usr/local/lib/loopback-owner.so$GPU_PRELOAD"
 unset DISPLAY
 
 rm -f /tmp/wayland-2 /tmp/wayland-2.lock

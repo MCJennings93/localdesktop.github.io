@@ -1,0 +1,12 @@
+#!/bin/sh
+# Moves the lsof package's binary to /usr/lib/localdesktop/lsof.real and makes /usr/bin/lsof a link
+# to /usr/local/bin/lsof, which answers loopback TCP queries from loopback-owner.so's records and
+# passes everything else to the real binary. Run by the pacman hook localdesktop-lsof.hook and by
+# the app at session start; does nothing when already done or when lsof isn't installed.
+set -eu
+[ -e /usr/local/bin/lsof ] || exit 0
+[ -L /usr/bin/lsof ] && [ "$(readlink /usr/bin/lsof)" = /usr/local/bin/lsof ] && exit 0
+[ -f /usr/bin/lsof ] || exit 0
+mkdir -p /usr/lib/localdesktop
+mv -f /usr/bin/lsof /usr/lib/localdesktop/lsof.real
+ln -s /usr/local/bin/lsof /usr/bin/lsof

@@ -1,0 +1,27 @@
+#!/bin/sh
+# lsof for Local Desktop: answers `lsof ... -i TCP@127.0.0.1:PORT` (Steam asks this for every
+# loopback connection to it, and refuses its UI's websocket without an answer) from the records
+# loopback-owner.so keeps, since Android hides /proc/net/tcp from the real lsof. The answer is in
+# lsof's -F field format (pid, parent, uid, name), the way Steam reads it. Every other call goes to
+# the real lsof. /usr/bin/lsof links here (localdesktop-lsof-divert moves the package's binary to
+# /usr/lib/localdesktop/lsof.real). See /usr/local/src/loopback-owner.c.
+real=/usr/lib/localdesktop/lsof.real
+[ -x "$real" ] || real=/usr/bin/lsof
+if [ "$(readlink -f "$real")" = "$(readlink -f "$0")" ]; then
+    echo "lsof: the lsof package isn't installed" >&2
+    exit 1
+fi
+port=
+for arg in "$@"; do
+    case $arg in
+        TCP@127.0.0.1:* | TCP@localhost:*) port=${arg##*:} ;;
+    esac
+done
+case $port in
+    "" | *[!0-9]*) exec "$real" "$@" ;;
+esac
+[ -r "/tmp/localdesktop-loopback/$port" ] || exit 1
+read -r pid ppid uid peer fd inode < "/tmp/localdesktop-loopback/$port" || exit 1
+# Only while that process still holds that socket: ports are reused.
+[ "$(stat -L -c %i "/proc/$pid/fd/$fd" 2>/dev/null)" = "$inode" ] || exit 1
+printf 'p%s\nR%s\nu%s\nn127.0.0.1:%s->127.0.0.1:%s\n' "$pid" "$ppid" "$uid" "$port" "$peer"

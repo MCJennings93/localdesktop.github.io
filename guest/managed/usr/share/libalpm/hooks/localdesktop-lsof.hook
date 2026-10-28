@@ -1,0 +1,13 @@
+# Puts Local Desktop's lsof wrapper (/usr/local/bin/lsof) in front of the real lsof after every
+# install or upgrade of the lsof package. Steam runs /usr/sbin/lsof by that path, and /usr/sbin is
+# /usr/bin on Arch. See /usr/local/libexec/localdesktop-lsof-divert.
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = lsof
+
+[Action]
+Description = Putting Local Desktop's loopback-aware lsof in front of the real one...
+When = PostTransaction
+Exec = /usr/local/libexec/localdesktop-lsof-divert

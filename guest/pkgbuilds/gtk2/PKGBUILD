@@ -1,0 +1,50 @@
+# GTK 2 for Valve's arm64 Steam client (steamui.so, vgui2_s.so link libgtk-x11-2.0). Arch has moved
+# gtk2 to the AUR and Arch Linux ARM ships no build, so this is the AUR PKGBUILD (gtk2 2.24.33-5,
+# maintainers heftig and jgc) for aarch64, built from GNOME's release tarball instead of git:
+# configure is already generated, so git, gtk-doc and autoreconf aren't needed. glib-genmarshal and
+# glib-mkenums come from glib2-devel, which build.sh unpacks beside the build rather than installing.
+# Build on the phone with guest/pkgbuilds/build.sh gtk2.
+pkgname=gtk2
+pkgver=2.24.33
+pkgrel=5
+pkgdesc="GObject-based multi-platform GUI toolkit (legacy)"
+url="https://www.gtk.org/"
+arch=(aarch64)
+license=(LGPL-2.1-or-later)
+depends=(
+  atk cairo desktop-file-utils fontconfig gdk-pixbuf2 glib2 glibc gtk-update-icon-cache libcups
+  librsvg libx11 libxcomposite libxcursor libxdamage libxext libxfixes libxi libxinerama libxrandr
+  libxrender pango shared-mime-info
+)
+source=(
+  "https://download.gnome.org/sources/gtk+/${pkgver%.*}/gtk+-$pkgver.tar.xz"
+  gtk-query-immodules-2.0.hook
+  0001-Lower-severity-of-XID-collision-warnings.patch
+  0002-Stop-looking-for-modules-in-cwd.patch
+)
+sha256sums=('ac2ac757f5942d318a311a54b0c80b5ef295f299c2a73c632f6bfb1ff49cc6da'
+            SKIP SKIP SKIP)
+
+prepare() {
+  cd gtk+-$pkgver
+  patch -p1 < ../0001-Lower-severity-of-XID-collision-warnings.patch
+  # CVE-2024-6655: https://www.openwall.com/lists/oss-security/2024/09/09/1
+  patch -p1 < ../0002-Stop-looking-for-modules-in-cwd.patch
+}
+
+build() {
+  CFLAGS+=" -Wno-error=implicit-int -Wno-error=incompatible-pointer-types -Wno-error=int-conversion"
+  cd gtk+-$pkgver
+  ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --with-xinput=yes \
+    --disable-gtk-doc --disable-introspection
+  sed -i -e 's/ -shared / -Wl,-O1,--as-needed\0/g' libtool
+  # configure takes these from glib-2.0.pc (/usr/bin), where glib2-devel isn't installed.
+  make GLIB_MKENUMS="$(command -v glib-mkenums)" GLIB_GENMARSHAL="$(command -v glib-genmarshal)"
+}
+
+package() {
+  cd gtk+-$pkgver
+  make DESTDIR="$pkgdir" install
+  install -Dt "$pkgdir/usr/share/libalpm/hooks" -m644 ../gtk-query-immodules-2.0.hook
+  rm "$pkgdir/usr/bin/gtk-update-icon-cache"
+}

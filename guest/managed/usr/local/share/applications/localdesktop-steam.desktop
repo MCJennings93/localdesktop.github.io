@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Steam
+Comment=Valve's arm64 Steam client
+Exec=/usr/local/bin/localdesktop-steam %U
+Icon=/root/.local/share/Steam/public/steam_tray_posix.png
+Terminal=false
+Categories=Game;
+MimeType=x-scheme-handler/steam;x-scheme-handler/steamlink;
+Actions=Restart;
+
+[Desktop Action Restart]
+Name=Restart Steam
+Exec=/usr/local/bin/localdesktop-steam --restart

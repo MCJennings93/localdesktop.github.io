@@ -1,0 +1,54 @@
+#!/bin/sh
+# Starts Valve's arm64 Linux Steam client in the Plasma session, installing it first if needed
+# (localdesktop-steam-install). --restart shuts a running client down first. Environment and
+# arguments follow DroidDeck's droiddeck-session (GPL-3.0). Output goes to /tmp/steam-run.log.
+S=${XDG_DATA_HOME:-$HOME/.local/share}/Steam
+exec >>/tmp/steam-run.log 2>&1
+echo "== $(date '+%F %T') localdesktop-steam $*"
+running() { pgrep -f "$S/steamrtarm64/steam( |$)" >/dev/null; }
+if [ "${1:-}" = --restart ]; then
+    shift
+    if running; then
+        LD_LIBRARY_PATH=$S/steamrtarm64 "$S/steamrtarm64/steam" -shutdown
+        n=0
+        while running && [ "$n" -lt 30 ]; do sleep 1; n=$((n + 1)); done
+        pkill -9 -f "$S/steamrtarm64/steam" 2>/dev/null
+        pkill -9 -f "$S/steamrtarm64/steamwebhelper" 2>/dev/null
+    fi
+fi
+localdesktop-steam-install || { echo "== Steam client install failed"; exit 1; }
+# Left behind by a killed client: .crash opens the update UI on its spinner, the htmlcache locks can
+# leave the UI blank (DroidDeck x86-64-steam-client.md).
+if ! running; then
+    rm -f "$S/.crash" "$S/steam.pid" "$S"/config/htmlcache/Singleton*
+fi
+# Steam asks lsof who owns each loopback connection to it (see /usr/local/src/loopback-owner.c);
+# sessions started before the preload existed lack it.
+case " $LD_PRELOAD " in
+    *" /usr/local/lib/loopback-owner.so "*) ;;
+    *) export LD_PRELOAD="${LD_PRELOAD:+$LD_PRELOAD }/usr/local/lib/loopback-owner.so" ;;
+esac
+export STEAM_RUNTIME=1
+# A containerized client would re-execute itself through pressure-vessel (bwrap) without this.
+export STEAM_STEAMRT_RECURSION_GUARD=1
+export LD_LIBRARY_PATH=$S/steamrtarm64:$S/steamrtarm64/panorama${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+# Steam ships its FFmpeg as unversioned libav*.so files without the soname links Valve's runtime
+# would make (libavutil.so.59 ...); its other libraries link the sonames. Some sonames are real files
+# in Steam's manifest (libavresample.so.4): replacing one makes the client re-extract its whole package
+# and restart on every launch, so only missing names are linked.
+for lib in "$S"/steamrtarm64/libav*.so "$S"/steamrtarm64/libsw*.so; do
+    soname=$(readelf -d "$lib" 2>/dev/null | sed -n 's/.*SONAME.*\[\(.*\)\]/\1/p')
+    [ -n "$soname" ] && [ "$soname" != "${lib##*/}" ] || continue
+    [ -e "$S/steamrtarm64/$soname" ] || [ -L "$S/steamrtarm64/$soname" ] || ln -s "${lib##*/}" "$S/steamrtarm64/$soname"
+done
+channel=$(localdesktop-steam-install --channel)
+# The client exits with 42 to restart itself after an update, as steam.sh handles; up to five times.
+n=0
+while :; do
+    "$S/steamrtarm64/steam" -clientbeta "$channel" -no-cef-sandbox -cef-ozone-platform=x11 \
+        -cef-force-gpu -cef-use-gl=angle -cef-use-angle=vulkan "$@"
+    rc=$?
+    echo "== steam exited rc=$rc"
+    [ "$rc" = 42 ] && [ "$n" -lt 5 ] || exit "$rc"
+    n=$((n + 1))
+done
