@@ -1,0 +1,189 @@
+#!/usr/bin/python3
+# The emulated Steam Deck controller: /usr/local/lib/libfakeinput.so (DroidDeck's, preloaded into the
+# Steam client by localdesktop-steam) serves it to Steam as /dev/hidraw16 and reads its state from a
+# ring file. This tool describes the device in sysfs and udev, creates the ring, and sets its state.
+# The sysfs layout and the ring format follow DroidDeck 4f58230a SteamDeckPad.kt and
+# FakeInputWriter.java (GPL-3.0); /sys/devices/droiddeck and /sys/class/hidraw are bound by the app.
+#
+#   localdesktop-pad setup            describe the pad and create the ring (session start)
+#   localdesktop-pad env              the variables libfakeinput needs, as shell assignments
+#   localdesktop-pad press A [B ...]  hold buttons     localdesktop-pad release [A ...]  (none: all)
+#   localdesktop-pad tap A [ms]       press and release
+#   localdesktop-pad stick left|right X Y    -1..1      localdesktop-pad trigger left|right 0..1
+#   localdesktop-pad dpad up|down|left|right|none       localdesktop-pad state
+import mmap
+import os
+import struct
+import sys
+import time
+
+RUN = "/run/localdesktop-pad"
+INPUT_DIR = RUN + "/fake-input"
+RING = RUN + "/fakeinput-rings/ring0"
+LOG = RUN + "/pad.log"
+# Android refuses to list /sys, /sys/class and /sys/bus; libfakeinput lists these stand-ins for them
+# in the Steam client, so libudev finds the hidraw class.
+LISTING = RUN + "/sysfs-listing"
+
+RING_MAGIC, RING_VERSION, EVENT_SIZE, CAPACITY = 0x46494252, 2, 24, 4096
+HEADER = 64
+RING_SIZE = HEADER + CAPACITY * EVENT_SIZE
+FILE_SIZE = RING_SIZE + 64 + 256  # + the IMU block + the Steam Controller block
+SNAPSHOT_SEQ, SNAPSHOT_BUTTONS, SNAPSHOT_AXES = 32, 40, 44
+
+# Snapshot button bits (libfakeinput kSnapshotButtons, plus Quick Access at bit 11).
+BUTTONS = {"A": 0, "B": 1, "X": 2, "Y": 3, "L1": 4, "R1": 5, "VIEW": 6, "MENU": 7,
+           "L3": 8, "R3": 9, "STEAM": 10, "QAM": 11}
+ALIASES = {"LB": "L1", "RB": "R1", "SELECT": "VIEW", "BACK": "VIEW", "START": "MENU", "GUIDE": "STEAM",
+           "HOME": "STEAM", "LS": "L3", "RS": "R3", "...": "QAM"}
+# Snapshot axes: left stick x/y, right stick x/y, right trigger, left trigger, d-pad x/y.
+LX, LY, RX, RY, RT, LT, HX, HY = range(8)
+
+MAJOR, MINOR = 240, 16
+NODE = "hidraw%d" % MINOR
+DEVICES = "/sys/devices/droiddeck"
+USB = DEVICES + "/usb1"
+INTERFACE = USB + "/1-1:1.2"
+HID = INTERFACE + "/0003:28DE:1205.0001"
+HIDRAW = HID + "/hidraw/" + NODE
+SERIAL = "DROIDDECK0001"
+REPORT_DESCRIPTOR = bytes([
+    0x06, 0xff, 0xff, 0x09, 0x01, 0xa1, 0x01, 0x09, 0x02, 0x09, 0x03, 0x15, 0x00,
+    0x26, 0xff, 0x00, 0x75, 0x08, 0x95, 0x40, 0x81, 0x02, 0x09, 0x06, 0x09, 0x07,
+    0x15, 0x00, 0x26, 0xff, 0x00, 0x75, 0x08, 0x95, 0x40, 0xb1, 0x02, 0xc0])
+
+
+def write(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb" if isinstance(data, bytes) else "w") as f:
+        f.write(data)
+
+
+def link(path, target):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if os.path.lexists(path):
+        os.unlink(path)
+    os.symlink(target, path)
+
+
+def describe():
+    write(USB + "/uevent", "DEVTYPE=usb_device\nPRODUCT=28de/1205/100\nTYPE=0/0/0\nBUSNUM=001\nDEVNUM=002\n")
+    for name, value in (("idVendor", "28de"), ("idProduct", "1205"), ("bcdDevice", "0100"),
+                        ("manufacturer", "Valve Software"), ("product", "Steam Deck Controller"),
+                        ("serial", SERIAL)):
+        write(USB + "/" + name, value + "\n")
+    link(USB + "/subsystem", "/sys/bus/usb")
+    write(INTERFACE + "/uevent", "DEVTYPE=usb_interface\nPRODUCT=28de/1205/100\nINTERFACE=3/0/0\n")
+    write(INTERFACE + "/bInterfaceNumber", "02\n")
+    write(INTERFACE + "/bInterfaceClass", "03\n")
+    link(INTERFACE + "/subsystem", "/sys/bus/usb")
+    write(HID + "/uevent", "DRIVER=hid-steam\nHID_ID=0003:000028DE:00001205\n"
+          "HID_NAME=Valve Software Steam Deck Controller\nHID_PHYS=usb-droiddeck-1/input2\n"
+          "HID_UNIQ=%s\nMODALIAS=hid:b0003g0001v000028DEp00001205\n" % SERIAL)
+    write(HID + "/report_descriptor", REPORT_DESCRIPTOR)
+    link(HID + "/subsystem", "/sys/bus/hid")
+    write(HIDRAW + "/uevent", "MAJOR=%d\nMINOR=%d\nDEVNAME=%s\n" % (MAJOR, MINOR, NODE))
+    write(HIDRAW + "/dev", "%d:%d\n" % (MAJOR, MINOR))
+    link(HIDRAW + "/subsystem", "/sys/class/hidraw")
+    link(HIDRAW + "/device", HID)
+    link("/sys/class/hidraw/" + NODE, HIDRAW)
+    try:
+        # /sys/dev/char is the app's fake DRM sysfs when the GPU is shown as a render node.
+        link("/sys/dev/char/%d:%d" % (MAJOR, MINOR), HIDRAW)
+    except OSError as error:
+        print("localdesktop-pad: /sys/dev/char/%d:%d not linked (%s)" % (MAJOR, MINOR, error), file=sys.stderr)
+    write("/run/udev/data/c%d:%d" % (MAJOR, MINOR), "I:1\nE:ID_INPUT=1\nE:ID_INPUT_JOYSTICK=1\n")
+    for name in ("sys/bus", "sys/class", "sys/devices", "class/hidraw", "bus"):
+        os.makedirs(LISTING + "/" + name, exist_ok=True)
+
+
+def create_ring():
+    os.makedirs(INPUT_DIR, exist_ok=True)
+    os.makedirs(os.path.dirname(RING), exist_ok=True)
+    with open(RING, "wb") as f:
+        f.write(struct.pack("<IIII", RING_MAGIC, RING_VERSION, EVENT_SIZE, CAPACITY))
+        f.truncate(FILE_SIZE)
+
+
+def ring():
+    f = open(RING, "r+b")
+    return f, mmap.mmap(f.fileno(), FILE_SIZE)
+
+
+def read_state(m):
+    buttons, = struct.unpack_from("<I", m, SNAPSHOT_BUTTONS)
+    return buttons, list(struct.unpack_from("<8h", m, SNAPSHOT_AXES))
+
+
+def write_state(m, buttons, axes):
+    # A seqlock, as FakeInputWriter writes it: odd while the fields change.
+    seq, = struct.unpack_from("<Q", m, SNAPSHOT_SEQ)
+    struct.pack_into("<Q", m, SNAPSHOT_SEQ, seq + 1)
+    struct.pack_into("<I", m, SNAPSHOT_BUTTONS, buttons)
+    struct.pack_into("<8h", m, SNAPSHOT_AXES, *[max(-32767, min(32767, int(a))) for a in axes])
+    struct.pack_into("<Q", m, SNAPSHOT_SEQ, seq + 2)
+
+
+def button_bits(names):
+    bits = 0
+    for name in names:
+        key = ALIASES.get(name.upper(), name.upper())
+        if key not in BUTTONS:
+            sys.exit("localdesktop-pad: unknown button %s (%s)" % (name, ", ".join(BUTTONS)))
+        bits |= 1 << BUTTONS[key]
+    return bits
+
+
+def side(name, left, right):
+    if name not in ("left", "right"):
+        sys.exit("localdesktop-pad: left or right, not %s" % name)
+    return left if name == "left" else right
+
+
+def main(args):
+    if not args:
+        sys.exit(__doc__ or "usage: see the comment at the top of %s" % sys.argv[0])
+    command, rest = args[0], args[1:]
+    if command == "setup":
+        describe()
+        create_ring()
+        return
+    if command == "env":
+        for name, value in (("FAKE_EVDEV_DIR", INPUT_DIR), ("FAKE_EVDEV_MEMFD_PATHS", "0=" + RING),
+                            ("FAKE_EVDEV_IDENTITY", "xbox360"), ("FAKE_EVDEV_VIBRATION", "1"),
+                            ("FAKE_EVDEV_UINPUT", "1"), ("FAKE_EVDEV_DECK", "1"),
+                            ("FAKE_EVDEV_PAD_TYPE", "deck"), ("FAKE_DECK_SYSFS_LISTING", LISTING),
+                            ("FAKE_EVDEV_LOG", "1"),
+                            ("FAKE_EVDEV_LOG_FILE", LOG), ("SDL_JOYSTICK_DISABLE_UDEV", "1"),
+                            ("SDL_HIDAPI_JOYSTICK_DISABLE_UDEV", "1")):
+            print("%s=%s" % (name, value))
+        return
+    f, m = ring()
+    buttons, axes = read_state(m)
+    if command == "press":
+        buttons |= button_bits(rest)
+    elif command == "release":
+        buttons &= ~button_bits(rest) if rest else 0
+    elif command == "tap":
+        held = int(rest[1]) if len(rest) > 1 else 120
+        write_state(m, buttons | button_bits(rest[:1]), axes)
+        time.sleep(held / 1000)
+    elif command == "stick":
+        x_axis, y_axis = side(rest[0], (LX, LY), (RX, RY))
+        axes[x_axis], axes[y_axis] = float(rest[1]) * 32767, float(rest[2]) * 32767
+    elif command == "trigger":
+        axes[side(rest[0], LT, RT)] = float(rest[1]) * 255
+    elif command == "dpad":
+        axes[HX], axes[HY] = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0),
+                              "none": (0, 0)}[rest[0]]
+    elif command == "state":
+        held = [name for name, bit in BUTTONS.items() if buttons & (1 << bit)]
+        print("buttons: %s\naxes: %s" % (" ".join(held) or "-", axes))
+        return
+    else:
+        sys.exit("localdesktop-pad: unknown command %s" % command)
+    write_state(m, buttons, axes)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

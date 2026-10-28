@@ -109,6 +109,27 @@ fn empty_pci_bus() -> bool {
     })
 }
 
+/// Directory beside `ARCH_FS_ROOT` holding the virtual game pads' sysfs entries. It must not be
+/// inside the rootfs: proot names an open file by its rootfs path before its bound one, so
+/// `/proc/self/fd` would read back `/sys/.pad/...`, and libudev drops a device whose resolved path
+/// is not under `/sys/devices`.
+fn pad_sysfs_dir() -> std::path::PathBuf {
+    Path::new(config::ARCH_FS_ROOT).with_file_name("pad-sysfs")
+}
+
+/// Create the directories bound over `/sys/devices/droiddeck` and `/sys/class/hidraw`, where
+/// `/usr/local/bin/localdesktop-pad` describes the emulated Steam Deck controller (a hidraw device
+/// that `/usr/local/lib/libfakeinput.so` serves to Steam). Android has no hidraw devices the app
+/// may open, so the guest loses nothing under `/sys/class/hidraw`. Returns whether they can be bound.
+fn pad_sysfs() -> bool {
+    static READY: OnceLock<bool> = OnceLock::new();
+    *READY.get_or_init(|| {
+        let base = pad_sysfs_dir();
+        fs::create_dir_all(base.join("devices")).is_ok()
+            && fs::create_dir_all(base.join("hidraw")).is_ok()
+    })
+}
+
 /// Runs a shell command inside the Arch Linux PRoot environment.
 ///
 /// - `command`: The shell command to execute (passed to `sh -c`).
@@ -253,6 +274,13 @@ impl ArchProcess {
                 config::ARCH_FS_ROOT,
                 EMPTY_PCI_BUS
             ));
+        }
+
+        if pad_sysfs() {
+            let base = pad_sysfs_dir().display().to_string();
+            process
+                .arg(format!("--bind={base}/devices:/sys/devices/droiddeck"))
+                .arg(format!("--bind={base}/hidraw:/sys/class/hidraw"));
         }
 
         if masked_cpuinfo() {

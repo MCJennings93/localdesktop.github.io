@@ -28,6 +28,12 @@ case " $LD_PRELOAD " in
     *" /usr/local/lib/loopback-owner.so "*) ;;
     *) export LD_PRELOAD="${LD_PRELOAD:+$LD_PRELOAD }/usr/local/lib/loopback-owner.so" ;;
 esac
+# The emulated Steam Deck controller: libfakeinput serves it to the client as /dev/hidraw16 (see
+# localdesktop-pad). Steam Input then hands games its virtual pad through the same library.
+if [ -f /run/localdesktop-pad/fakeinput-rings/ring0 ] && [ -f /usr/local/lib/libfakeinput.so ]; then
+    export LD_PRELOAD="$LD_PRELOAD /usr/local/lib/libfakeinput.so"
+    eval "$(localdesktop-pad env | sed 's/^/export /')"
+fi
 export STEAM_RUNTIME=1
 # A containerized client would re-execute itself through pressure-vessel (bwrap) without this.
 export STEAM_STEAMRT_RECURSION_GUARD=1
