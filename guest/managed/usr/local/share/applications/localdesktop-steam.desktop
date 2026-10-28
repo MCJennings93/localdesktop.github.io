@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
 Name=Steam
-Comment=Valve's arm64 Steam client
-Exec=/usr/local/bin/localdesktop-steam %U
+Comment=Steam's Steam Deck UI in Game Mode (gamescope)
+Exec=/usr/local/bin/localdesktop-gamemode %U
 Icon=/root/.local/share/Steam/public/steam_tray_posix.png
 Terminal=false
 Categories=Game;
@@ -11,8 +11,8 @@ Actions=Restart;Desktop;
 
 [Desktop Action Restart]
 Name=Restart Steam
-Exec=/usr/local/bin/localdesktop-steam --restart
+Exec=/usr/local/bin/localdesktop-gamemode --restart
 
 [Desktop Action Desktop]
-Name=Restart Steam in Desktop Mode
+Name=Steam in Desktop Mode
 Exec=/usr/local/bin/localdesktop-steam --restart --desktop

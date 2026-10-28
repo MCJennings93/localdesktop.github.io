@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Steam Game Mode
-Comment=Steam's Steam Deck UI inside gamescope, fullscreen
-Exec=/usr/local/bin/localdesktop-gamemode
-Icon=/root/.local/share/Steam/public/steam_tray_posix.png
-Terminal=false
-Categories=Game;

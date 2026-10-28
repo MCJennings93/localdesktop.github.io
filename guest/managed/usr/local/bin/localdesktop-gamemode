@@ -1,5 +1,5 @@
 #!/bin/sh
-# Game Mode: Steam's Steam Deck UI inside gamescope, fullscreen over the Plasma session, as SteamOS
+# Game Mode, what the Steam menu entry opens: Steam's Steam Deck UI inside gamescope, fullscreen over the Plasma session, as SteamOS
 # runs it (and DroidDeck's droiddeck-session, GPL-3.0). Games see a screen of the display's own
 # resolution, read when Game Mode starts, and gamescope maps touch onto it; Steam's
 # per-game Touchscreen setting decides what a touch does. "Switch to Desktop" in Steam's power menu
@@ -9,8 +9,20 @@
 # Output goes to /tmp/gamemode.log.
 exec >>/tmp/gamemode.log 2>&1
 echo "== $(date '+%F %T') localdesktop-gamemode $*"
+# --restart ends a running Game Mode first (Steam shuts down, gamescope ends with it).
+if [ "${1:-}" = --restart ]; then
+    shift
+    if pgrep -x gamescope >/dev/null; then
+        localdesktop-steam --shutdown
+        n=0
+        while pgrep -x gamescope >/dev/null && [ "$n" -lt 30 ]; do sleep 1; n=$((n + 1)); done
+        pkill -x gamescope 2>/dev/null
+    fi
+fi
 if pgrep -x gamescope >/dev/null; then
     echo "== gamescope is already running"
+    # A steam:// link goes to the running client.
+    [ $# -gt 0 ] && exec localdesktop-steam "$@"
     exit 0
 fi
 # One Steam client at a time: the desktop one goes first.
@@ -20,6 +32,8 @@ panel=$(DISPLAY=${DISPLAY:-:0} xrandr --current 2>/dev/null | sed -n 's/.*curren
 panel=${panel:-1920x1080}
 size=${LOCALDESKTOP_GAMEMODE_SIZE:-$panel}
 echo "== panel $panel, games at $size"
+# The app shows its on-screen gamepad while this pid (gamescope, after exec) is alive.
+mkdir -p /run/localdesktop-pad && echo $$ > /run/localdesktop-pad/gamemode
 exec gamescope --backend wayland --expose-wayland -f -e \
     -W "${panel%x*}" -H "${panel#*x}" -w "${size%x*}" -h "${size#*x}" \
     --default-touch-mode 4 \
