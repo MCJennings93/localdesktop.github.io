@@ -41,6 +41,42 @@ for lib in "$S"/steamrtarm64/libav*.so "$S"/steamrtarm64/libsw*.so; do
     [ -n "$soname" ] && [ "$soname" != "${lib##*/}" ] || continue
     [ -e "$S/steamrtarm64/$soname" ] || [ -L "$S/steamrtarm64/$soname" ] || ln -s "${lib##*/}" "$S/steamrtarm64/$soname"
 done
+# "Linux x86 (FEX)" in a game's Compatibility settings: the arm64 client cannot run x86 Linux games itself.
+# Steam reads compatibilitytools.d only at startup.
+tool=$S/compatibilitytools.d/localdesktop-fex
+mkdir -p "$tool"
+cat > "$tool/compatibilitytool.vdf" <<'EOF'
+"compatibilitytools"
+{
+	"compat_tools"
+	{
+		"localdesktop-fex"
+		{
+			"install_path" "."
+			"display_name" "Linux x86 (FEX)"
+			"from_oslist" "linux"
+			"to_oslist" "linux"
+		}
+	}
+}
+EOF
+cat > "$tool/toolmanifest.vdf" <<'EOF'
+"manifest"
+{
+	"version" "2"
+	"commandline" "/launch %verb%"
+	"use_tool_subprocess_reaper" "1"
+}
+EOF
+cat > "$tool/launch" <<'EOF'
+#!/bin/sh
+verb=$1; shift
+case $verb in
+    getcompatpath | getnativepath) printf '%s\n' "$1"; exit 0 ;;
+esac
+exec /usr/local/bin/localdesktop-fex steam "$verb" "$@"
+EOF
+chmod 755 "$tool/launch"
 channel=$(localdesktop-steam-install --channel)
 # The client exits with 42 to restart itself after an update, as steam.sh handles; up to five times.
 n=0
