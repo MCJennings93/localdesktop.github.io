@@ -64,3 +64,10 @@ the Deck's Y sign).
    virtual pad.
 3. Touch controls drawn by the app's compositor, writing the ring; then Steam's touch controller
    (`0000:11fb`), whose layouts and per-game configs are Steam's.
+
+## Requirements for the on-screen gamepad
+
+- One quick toggle shows or hides it (no settings page), and the choice persists.
+- With a physical controller connected it stays hidden unless turned on, while touches still go to
+  the game (as touch/mouse): no buttons drawn over the picture.
+- Hidden means the touches it would have taken go to the game instead.
