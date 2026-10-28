@@ -1,10 +1,12 @@
 #!/bin/sh
 # Game Mode: Steam's Steam Deck UI inside gamescope, fullscreen over the Plasma session, as SteamOS
-# runs it (and DroidDeck's droiddeck-session, GPL-3.0). Games see a 1280x720 screen (16:9, which
-# many assume) that gamescope scales to the panel and maps touch onto; Steam's per-game
-# Touchscreen setting decides what a touch does. "Switch to Desktop" in Steam's power menu
+# runs it (and DroidDeck's droiddeck-session, GPL-3.0). Games see a screen of the display's own
+# resolution, read when Game Mode starts, and gamescope maps touch onto it; Steam's
+# per-game Touchscreen setting decides what a touch does. "Switch to Desktop" in Steam's power menu
 # (steamos-session-select) shuts Steam down, which ends gamescope and returns to Plasma.
-# LOCALDESKTOP_GAMEMODE_SIZE=WxH changes the game screen. Output goes to /tmp/gamemode.log.
+# LOCALDESKTOP_GAMEMODE_SIZE=WxH sets a smaller game screen that gamescope scales up (lighter on the
+# GPU; 1280x720 for games that assume 16:9 and letterbox themselves wrongly otherwise).
+# Output goes to /tmp/gamemode.log.
 exec >>/tmp/gamemode.log 2>&1
 echo "== $(date '+%F %T') localdesktop-gamemode $*"
 if pgrep -x gamescope >/dev/null; then
@@ -13,10 +15,10 @@ if pgrep -x gamescope >/dev/null; then
 fi
 # One Steam client at a time: the desktop one goes first.
 localdesktop-steam --shutdown
-size=${LOCALDESKTOP_GAMEMODE_SIZE:-1280x720}
 # The output starts at the panel's size; the nested backend follows the window KWin gives it.
 panel=$(DISPLAY=${DISPLAY:-:0} xrandr --current 2>/dev/null | sed -n 's/.*current \([0-9]*\) x \([0-9]*\).*/\1x\2/p')
 panel=${panel:-1920x1080}
+size=${LOCALDESKTOP_GAMEMODE_SIZE:-$panel}
 echo "== panel $panel, games at $size"
 exec gamescope --backend wayland --expose-wayland -f -e \
     -W "${panel%x*}" -H "${panel#*x}" -w "${size%x*}" -h "${size#*x}" \
