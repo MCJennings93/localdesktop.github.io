@@ -2,8 +2,10 @@
 # Installs Valve's arm64 Linux Steam client (steamrtarm64/steam, Steam Deck client channels) into
 # ~/.local/share/Steam from Valve's CDN, part by part with checksums; --channel prints the channel.
 # This is DroidDeck's droiddeck-steam-install (tools/linuxfs/overlay/usr/local/bin, commit
-# 4f58230a, GPL-3.0) unchanged apart from this header; its BL_STEAM_CHANNEL and
-# ~/.config/droiddeck/steam-channel settings keep their names.
+# 4f58230a, GPL-3.0); its BL_STEAM_CHANNEL and ~/.config/droiddeck/steam-channel settings keep
+# their names. One change: unless a channel is pinned, the one Steam itself keeps in
+# package/beta wins (the Deck UI changes it, e.g. when a beta ends); forcing the other one made
+# the client reinstall itself on every start.
 set -eu
 cdn_list="https://client-update.steamstatic.com https://client-update.akamai.steamstatic.com https://client-update.fastly.steamstatic.com"
 beta_channel=steamdeck_publicbeta
@@ -19,6 +21,10 @@ case $wanted in
     pinned=
     steam_channel=$beta_channel
     [ "$(cat "$channel_state" 2>/dev/null)" = "$stable_channel" ] && steam_channel=$stable_channel
+    case $(cat "$steam_root/package/beta" 2>/dev/null) in
+      "$stable_channel") steam_channel=$stable_channel ;;
+      "$beta_channel") steam_channel=$beta_channel ;;
+    esac
     ;;
 esac
 if [ "${1:-}" = --channel ]; then
