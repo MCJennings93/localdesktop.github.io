@@ -1,0 +1,10 @@
+#!/bin/sh
+# What Steam's Deck UI runs for "Switch to Desktop" (steamos-session-select plasma) and to stay
+# (gamescope). In Game Mode (localdesktop-gamemode) leaving means shutting Steam down: gamescope
+# ends with it and the Plasma session is back. After DroidDeck's steamos-session-select (GPL-3.0).
+echo "steamos-session-select: $*" >>/tmp/gamemode.log
+case "${1:-}" in
+    "" | gamescope) exit 0 ;;
+esac
+localdesktop-steam --shutdown &
+exit 0

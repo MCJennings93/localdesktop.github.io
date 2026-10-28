@@ -1,22 +1,25 @@
 #!/bin/sh
 # Starts Valve's arm64 Linux Steam client in the Plasma session, installing it first if needed
-# (localdesktop-steam-install). It opens in Big Picture; --desktop opens the desktop client instead.
-# --restart shuts a running client down first. Environment and arguments follow DroidDeck's
-# droiddeck-session (GPL-3.0). Output goes to /tmp/steam-run.log.
+# (localdesktop-steam-install). It opens in Big Picture; --desktop opens the desktop client instead,
+# and --gamemode the Steam Deck UI inside gamescope (localdesktop-gamemode starts it that way).
+# --restart shuts a running client down first; --shutdown only shuts it down. Environment and
+# arguments follow DroidDeck's droiddeck-session (GPL-3.0). Output goes to /tmp/steam-run.log.
 S=${XDG_DATA_HOME:-$HOME/.local/share}/Steam
 exec >>/tmp/steam-run.log 2>&1
 echo "== $(date '+%F %T') localdesktop-steam $*"
 running() { pgrep -f "$S/steamrtarm64/steam( |$)" >/dev/null; }
-restart= ui=-gamepadui
+restart= shutdown= ui=-gamepadui deck=
 while :; do
     case ${1:-} in
         --restart) restart=1 ;;
+        --shutdown) shutdown=1 ;;
         --desktop) ui=-nobigpicture ;;
+        --gamemode) deck="-steamdeck -steamos3" ;;
         *) break ;;
     esac
     shift
 done
-if [ -n "$restart" ]; then
+if [ -n "$restart$shutdown" ]; then
     if running; then
         LD_LIBRARY_PATH=$S/steamrtarm64 "$S/steamrtarm64/steam" -shutdown
         n=0
@@ -24,6 +27,7 @@ if [ -n "$restart" ]; then
         pkill -9 -f "$S/steamrtarm64/steam" 2>/dev/null
         pkill -9 -f "$S/steamrtarm64/steamwebhelper" 2>/dev/null
     fi
+    [ -z "$shutdown" ] || exit 0
 fi
 localdesktop-steam-install || { echo "== Steam client install failed"; exit 1; }
 # Left behind by a killed client: .crash opens the update UI on its spinner, the htmlcache locks can
@@ -44,6 +48,9 @@ if [ -f /run/localdesktop-pad/fakeinput-rings/ring0 ] && [ -f /usr/local/lib/lib
     eval "$(localdesktop-pad env | sed 's/^/export /')"
 fi
 export STEAM_RUNTIME=1
+# The Deck UI offers gamescope's upscaling (NIS) and scaling filters, which it controls through
+# gamescope's X properties.
+[ -n "$deck" ] && export STEAM_GAMESCOPE_NIS_SUPPORTED=1 STEAM_GAMESCOPE_FANCY_SCALING_SUPPORT=1
 # A containerized client would re-execute itself through pressure-vessel (bwrap) without this.
 export STEAM_STEAMRT_RECURSION_GUARD=1
 export LD_LIBRARY_PATH=$S/steamrtarm64:$S/steamrtarm64/panorama${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
@@ -96,7 +103,8 @@ channel=$(localdesktop-steam-install --channel)
 # The client exits with 42 to restart itself after an update, as steam.sh handles; up to five times.
 n=0
 while :; do
-    "$S/steamrtarm64/steam" -clientbeta "$channel" "$ui" -no-cef-sandbox -cef-ozone-platform=x11 \
+    # shellcheck disable=SC2086
+    "$S/steamrtarm64/steam" -clientbeta "$channel" "$ui" $deck -no-cef-sandbox -cef-ozone-platform=x11 \
         -cef-force-gpu -cef-use-gl=angle -cef-use-angle=vulkan "$@"
     rc=$?
     echo "== steam exited rc=$rc"
