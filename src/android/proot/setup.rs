@@ -1482,6 +1482,7 @@ pub fn setup(android_app: AndroidApp) -> PolarBearBackend {
             long_press_timeout_ms: long_press_timeout_ms(&android_app),
             pointer_pressed: false,
             native_touch: get_application_context().local_config.input.native_touch,
+            gamepad: crate::android::backend::wayland::Gamepad::new(),
             android_app,
         })
     } else {

@@ -568,6 +568,7 @@ fn redraw(backend: &mut WaylandBackend) -> Result<(), String> {
                 .map(move |element| RescaleRenderElement::from_element(element, (0, 0).into(), scale))
             })
             .collect::<Vec<_>>();
+        let pad = backend.gamepad.elements(renderer, (size.w, size.h));
 
         let mut frame = renderer
             .render(&mut framebuffer, size, Transform::Flipped180)
@@ -577,6 +578,10 @@ fn redraw(backend: &mut WaylandBackend) -> Result<(), String> {
             .map_err(|error| format!("Failed to clear frame: {error:?}"))?;
         draw_render_elements(&mut frame, 1.0, &elements, &[damage])
             .map_err(|error| format!("Failed to draw render elements: {error:?}"))?;
+        if !pad.is_empty() {
+            draw_render_elements::<GlesRenderer, _, _>(&mut frame, 1.0, &pad, &[damage])
+                .map_err(|error| format!("Failed to draw the gamepad: {error:?}"))?;
+        }
         // We rely on the nested compositor to do the sync for us.
         let _ = frame
             .finish()

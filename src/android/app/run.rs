@@ -190,7 +190,7 @@ impl ApplicationHandler<AppUserEvent> for PolarBearApp {
             // Input goes out to clients now rather than at the next redraw; a finger held down
             // keeps redraws going for long-press detection.
             flush_clients(&mut backend.compositor);
-            if window_changed || !backend.touch_points.is_empty() {
+            if window_changed || !backend.touch_points.is_empty() || backend.compositor.state.needs_redraw {
                 backend.compositor.state.needs_redraw = true;
                 if let Some(winit) = backend.graphic_renderer.as_ref() {
                     winit.window().request_redraw();

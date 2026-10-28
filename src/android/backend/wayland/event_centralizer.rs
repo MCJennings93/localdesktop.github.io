@@ -144,6 +144,11 @@ pub fn centralize(event: WindowEvent, backend: &mut WaylandBackend) -> Centraliz
             };
             CentralizedEvent::Input(event)
         }
+        // Touches on the on-screen gamepad's controls (Game Mode) never reach the session.
+        WindowEvent::Touch(touch) if backend.gamepad.claim(&touch, window_size(backend)) => {
+            backend.compositor.state.needs_redraw = true;
+            CentralizedEvent::Unsupported
+        }
         WindowEvent::Touch(Touch {
             phase, location, id, ..
         }) if backend.native_touch => CentralizedEvent::NativeTouch {
@@ -327,4 +332,12 @@ fn centroid(
         x: sx / n,
         y: sy / n,
     }
+}
+
+/// The window's size in pixels, or nothing while there is no window.
+fn window_size(backend: &WaylandBackend) -> (i32, i32) {
+    backend
+        .graphic_renderer
+        .as_ref()
+        .map_or((0, 0), |winit| winit.window().inner_size().into())
 }

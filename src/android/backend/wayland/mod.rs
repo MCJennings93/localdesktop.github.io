@@ -3,6 +3,7 @@ mod compositor;
 mod event_centralizer;
 mod event_handler;
 mod frame_stats;
+mod gamepad;
 mod wake;
 mod input;
 mod keymap;
@@ -14,6 +15,7 @@ pub use output_state::write_guest_output_state;
 pub use compositor::{Compositor, State};
 pub use event_centralizer::{centralize, centralize_injected_keyboard, CentralizedEvent};
 pub use event_handler::{dispatch_clients, flush_clients, handle};
+pub use gamepad::Gamepad;
 pub use winit_backend::{bind, WinitGraphicsBackend};
 
 use smithay::{
@@ -62,6 +64,8 @@ pub struct WaylandBackend {
     pub pointer_pressed: bool,
     /// Forward touches as `wl_touch` instead of emulating a mouse (`[input] native_touch`).
     pub native_touch: bool,
+    /// The on-screen gamepad shown in Game Mode, which takes the touches on its controls.
+    pub gamepad: Gamepad,
 }
 
 impl WaylandBackend {

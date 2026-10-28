@@ -24,8 +24,25 @@ if [ "${1:-}" = --restart ]; then
         running && kill "$pid"
     fi
 fi
+# Plasma Mobile minimizes a window when its app is left for the home screen; opening Steam again
+# brings Game Mode's window back, through a KWin script.
+raise() {
+    script=/tmp/localdesktop-raise-gamescope.js
+    cat > "$script" <<'JS'
+for (const window of workspace.windowList()) {
+    if (window.resourceClass == "gamescope") {
+        window.minimized = false;
+        workspace.activeWindow = window;
+    }
+}
+JS
+    id=$(qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript "$script" localdesktop-raise) &&
+        qdbus6 org.kde.KWin "/Scripting/Script$id" org.kde.kwin.Script.run >/dev/null
+    qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript localdesktop-raise >/dev/null
+}
 if running; then
     echo "== gamescope is already running"
+    raise
     # A steam:// link goes to the running client.
     [ $# -gt 0 ] && exec localdesktop-steam "$@"
     exit 0
