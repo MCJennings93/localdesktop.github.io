@@ -1,13 +1,22 @@
 #!/bin/sh
 # Starts Valve's arm64 Linux Steam client in the Plasma session, installing it first if needed
-# (localdesktop-steam-install). --restart shuts a running client down first. Environment and
-# arguments follow DroidDeck's droiddeck-session (GPL-3.0). Output goes to /tmp/steam-run.log.
+# (localdesktop-steam-install). It opens in Big Picture; --desktop opens the desktop client instead.
+# --restart shuts a running client down first. Environment and arguments follow DroidDeck's
+# droiddeck-session (GPL-3.0). Output goes to /tmp/steam-run.log.
 S=${XDG_DATA_HOME:-$HOME/.local/share}/Steam
 exec >>/tmp/steam-run.log 2>&1
 echo "== $(date '+%F %T') localdesktop-steam $*"
 running() { pgrep -f "$S/steamrtarm64/steam( |$)" >/dev/null; }
-if [ "${1:-}" = --restart ]; then
+restart= ui=-gamepadui
+while :; do
+    case ${1:-} in
+        --restart) restart=1 ;;
+        --desktop) ui=-nobigpicture ;;
+        *) break ;;
+    esac
     shift
+done
+if [ -n "$restart" ]; then
     if running; then
         LD_LIBRARY_PATH=$S/steamrtarm64 "$S/steamrtarm64/steam" -shutdown
         n=0
@@ -87,7 +96,7 @@ channel=$(localdesktop-steam-install --channel)
 # The client exits with 42 to restart itself after an update, as steam.sh handles; up to five times.
 n=0
 while :; do
-    "$S/steamrtarm64/steam" -clientbeta "$channel" -no-cef-sandbox -cef-ozone-platform=x11 \
+    "$S/steamrtarm64/steam" -clientbeta "$channel" "$ui" -no-cef-sandbox -cef-ozone-platform=x11 \
         -cef-force-gpu -cef-use-gl=angle -cef-use-angle=vulkan "$@"
     rc=$?
     echo "== steam exited rc=$rc"

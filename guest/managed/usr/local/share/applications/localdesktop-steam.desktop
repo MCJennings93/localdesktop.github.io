@@ -7,8 +7,12 @@ Icon=/root/.local/share/Steam/public/steam_tray_posix.png
 Terminal=false
 Categories=Game;
 MimeType=x-scheme-handler/steam;x-scheme-handler/steamlink;
-Actions=Restart;
+Actions=Restart;Desktop;
 
 [Desktop Action Restart]
 Name=Restart Steam
 Exec=/usr/local/bin/localdesktop-steam --restart
+
+[Desktop Action Desktop]
+Name=Restart Steam in Desktop Mode
+Exec=/usr/local/bin/localdesktop-steam --restart --desktop
