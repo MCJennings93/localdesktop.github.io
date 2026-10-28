@@ -1,11 +1,14 @@
 #!/bin/sh
 # Game Mode, what the Steam menu entry opens: Steam's Steam Deck UI inside gamescope, fullscreen over the Plasma session, as SteamOS
-# runs it (and DroidDeck's droiddeck-session, GPL-3.0). Games see a screen of the display's own
-# resolution, read when Game Mode starts, and gamescope maps touch onto it; Steam's
+# runs it (and DroidDeck's droiddeck-session, GPL-3.0). Games see the largest 16:9 screen that fits
+# the display, at its pixel density (2176x1224 on a near-square foldable screen, 1920x1080 on a 20:9
+# phone), and gamescope maps touch onto it. Games assume 16:9; given another shape, some draw a
+# 16:9 picture inside it and then misplace touches and the cursor by the bars they added, which
+# no layer below the game can correct. Steam's per-game Game Resolution (Native) gives a game
+# that handles any shape the whole display. Steam's
 # per-game Touchscreen setting decides what a touch does. "Switch to Desktop" in Steam's power menu
 # (steamos-session-select) shuts Steam down, which ends gamescope and returns to Plasma.
-# LOCALDESKTOP_GAMEMODE_SIZE=WxH sets a smaller game screen that gamescope scales up (lighter on the
-# GPU; 1280x720 for games that assume 16:9 and letterbox themselves wrongly otherwise).
+# LOCALDESKTOP_GAMEMODE_SIZE=WxH sets another game screen (smaller ones are lighter on the GPU).
 # Output goes to /tmp/gamemode.log.
 exec >>/tmp/gamemode.log 2>&1
 echo "== $(date '+%F %T') localdesktop-gamemode $*"
@@ -52,7 +55,13 @@ localdesktop-steam --shutdown
 # The output starts at the panel's size; the nested backend follows the window KWin gives it.
 panel=$(DISPLAY=${DISPLAY:-:0} xrandr --current 2>/dev/null | sed -n 's/.*current \([0-9]*\) x \([0-9]*\).*/\1x\2/p')
 panel=${panel:-1920x1080}
-size=${LOCALDESKTOP_GAMEMODE_SIZE:-$panel}
+pw=${panel%x*} ph=${panel#*x}
+if [ $((pw * 9)) -le $((ph * 16)) ]; then
+    fit=${pw}x$((pw * 9 / 16 / 2 * 2))
+else
+    fit=$((ph * 16 / 9 / 2 * 2))x$ph
+fi
+size=${LOCALDESKTOP_GAMEMODE_SIZE:-$fit}
 echo "== panel $panel, games at $size"
 # The app shows its on-screen gamepad while this pid (gamescope, after exec) is alive.
 mkdir -p /run/localdesktop-pad && echo $$ > "$FLAG"
