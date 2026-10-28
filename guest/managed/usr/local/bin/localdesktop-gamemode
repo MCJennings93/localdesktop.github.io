@@ -43,6 +43,25 @@ JS
         qdbus6 org.kde.KWin "/Scripting/Script$id" org.kde.kwin.Script.run >/dev/null
     qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript localdesktop-raise >/dev/null
 }
+# gamescope opens its window only once Steam shows something, 10 s to a minute after the tap (more
+# after a client update), when Plasma Mobile no longer treats it as the app just opened and leaves
+# it behind the launcher. A KWin script, loaded for the session, brings each new gamescope window
+# to the front.
+watch() {
+    loaded=$(qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.isScriptLoaded localdesktop-gamescope)
+    [ "$loaded" = true ] && return
+    script=/tmp/localdesktop-gamescope.js
+    cat > "$script" <<'JS'
+workspace.windowAdded.connect(function (window) {
+    if (window.resourceClass == "gamescope") {
+        window.minimized = false;
+        workspace.activeWindow = window;
+    }
+});
+JS
+    id=$(qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript "$script" localdesktop-gamescope) &&
+        qdbus6 org.kde.KWin "/Scripting/Script$id" org.kde.kwin.Script.run >/dev/null
+}
 if running; then
     echo "== gamescope is already running"
     raise
@@ -50,6 +69,9 @@ if running; then
     [ $# -gt 0 ] && exec localdesktop-steam "$@"
     exit 0
 fi
+watch
+notify-send -a Steam -i /root/.local/share/Steam/public/steam_tray_posix.png "Steam is starting" \
+    "Game Mode opens in a few seconds; after a Steam update it can take a minute." 2>/dev/null &
 # One Steam client at a time: the desktop one goes first.
 localdesktop-steam --shutdown
 # The output starts at the panel's size; the nested backend follows the window KWin gives it.
