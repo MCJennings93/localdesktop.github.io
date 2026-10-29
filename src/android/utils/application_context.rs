@@ -1,6 +1,6 @@
 use crate::{
     android::utils::ndk::run_in_jvm,
-    core::config::{parse_config, LocalConfig, ARCH_FS_ROOT, CONFIG_FILE},
+    core::config::{arch_fs_root, parse_config, set_arch_fs_root, LocalConfig, CONFIG_FILE},
 };
 use jni::{
     objects::{JObject, JString},
@@ -31,8 +31,9 @@ impl ApplicationContext {
 
         let cache_dir = Self::get_path(&mut env, &activity, "getCacheDir");
         let data_dir = Self::get_path(&mut env, &activity, "getFilesDir");
+        set_arch_fs_root(&data_dir);
         let native_library_dir = Self::get_native_library_dir(&mut env, &activity);
-        let full_config_path = format!("{}{}", ARCH_FS_ROOT, CONFIG_FILE);
+        let full_config_path = format!("{}{}", arch_fs_root(), CONFIG_FILE);
         let local_config = parse_config(full_config_path);
         let permission_all_files_access = Self::is_all_files_access_granted(android_app);
 

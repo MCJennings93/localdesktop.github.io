@@ -13,7 +13,7 @@ pub type Log = Arc<dyn Fn(String) + Send + Sync>;
 
 const SUPPORT_CHECK_BINARY: &str = "ld-linux-aarch64.so.1";
 
-/// Guest path (under `ARCH_FS_ROOT`) of the masked `/proc/cpuinfo`, see `masked_cpuinfo`.
+/// Guest path (under `arch_fs_root()`) of the masked `/proc/cpuinfo`, see `masked_cpuinfo`.
 const MASKED_CPUINFO: &str = "proc/.cpuinfo";
 
 /// Write a `/proc/cpuinfo` that names every core a Cortex-A78, if the real one would make
@@ -49,11 +49,11 @@ fn masked_cpuinfo() -> bool {
             })
             .map(|line| line + "\n")
             .collect();
-        fs::write(Path::new(config::ARCH_FS_ROOT).join(MASKED_CPUINFO), masked).is_ok()
+        fs::write(Path::new(config::arch_fs_root()).join(MASKED_CPUINFO), masked).is_ok()
     })
 }
 
-/// Guest path (under `ARCH_FS_ROOT`) of the empty PCI bus bound over `/sys/bus/pci`.
+/// Guest path (under `arch_fs_root()`) of the empty PCI bus bound over `/sys/bus/pci`.
 const EMPTY_PCI_BUS: &str = "sys/.pci";
 
 /// Create an empty PCI bus (just an empty `devices/`) to stand in for `/sys/bus/pci`.
@@ -64,7 +64,7 @@ const EMPTY_PCI_BUS: &str = "sys/.pci";
 /// `exit(1)`. Chromium (Brave) probes the GPU through libpci at GPU init, so its GPU process
 /// died silently on every start and it fell back to software rendering. An empty bus lets libpci
 /// report zero devices instead, which is accurate for a phone.
-/// Guest directory (under `ARCH_FS_ROOT`) holding the fake DRM sysfs entries, see `kgsl_render_node`.
+/// Guest directory (under `arch_fs_root()`) holding the fake DRM sysfs entries, see `kgsl_render_node`.
 const KGSL_DRM: &str = "sys/.drm";
 
 /// The Adreno GPU node, shown to the guest as a DRM render node.
@@ -84,7 +84,7 @@ fn kgsl_render_node() -> Option<&'static String> {
         let minor = (rdev & 0xff) | ((rdev >> 12) & !0xff);
         let node = format!("renderD{minor}");
         let numbers = format!("{major}:{minor}");
-        let base = Path::new(config::ARCH_FS_ROOT).join(KGSL_DRM);
+        let base = Path::new(config::arch_fs_root()).join(KGSL_DRM);
         let _ = fs::remove_dir_all(&base);
         let device = base.join("sys").join(&numbers).join("device");
         fs::create_dir_all(device.join("drm").join(&node)).ok()?;
@@ -104,17 +104,17 @@ fn kgsl_render_node() -> Option<&'static String> {
 fn empty_pci_bus() -> bool {
     static READY: OnceLock<bool> = OnceLock::new();
     *READY.get_or_init(|| {
-        fs::create_dir_all(Path::new(config::ARCH_FS_ROOT).join(EMPTY_PCI_BUS).join("devices"))
+        fs::create_dir_all(Path::new(config::arch_fs_root()).join(EMPTY_PCI_BUS).join("devices"))
             .is_ok()
     })
 }
 
-/// Directory beside `ARCH_FS_ROOT` holding the virtual game pads' sysfs entries. It must not be
+/// Directory beside `arch_fs_root()` holding the virtual game pads' sysfs entries. It must not be
 /// inside the rootfs: proot names an open file by its rootfs path before its bound one, so
 /// `/proc/self/fd` would read back `/sys/.pad/...`, and libudev drops a device whose resolved path
 /// is not under `/sys/devices`.
 fn pad_sysfs_dir() -> std::path::PathBuf {
-    Path::new(config::ARCH_FS_ROOT).with_file_name("pad-sysfs")
+    Path::new(config::arch_fs_root()).with_file_name("pad-sysfs")
 }
 
 /// Create the directories bound over `/sys/devices/droiddeck` and `/sys/class/hidraw`, where
@@ -230,7 +230,7 @@ impl ArchProcess {
 
         process
             .arg("-r")
-            .arg(config::ARCH_FS_ROOT)
+            .arg(config::arch_fs_root())
             .arg("-L")
             .arg("--link2symlink")
             .arg("--sysvipc")
@@ -239,7 +239,7 @@ impl ArchProcess {
             .arg("--bind=/dev")
             .arg("--bind=/proc")
             .arg("--bind=/sys")
-            .arg(format!("--bind={}/tmp:/dev/shm", config::ARCH_FS_ROOT))
+            .arg(format!("--bind={}/tmp:/dev/shm", config::arch_fs_root()))
             // /dev/pts and /dev/ptmx are already covered by --bind=/dev above.
             // The explicit sub-binds added in commit 61d9079 were redundant and caused
             // proot to double-translate PTY ioctls (TIOCGPTN/TIOCSPTLCK/TIOCSWINSZ),
@@ -259,19 +259,19 @@ impl ArchProcess {
             .arg("--bind=/proc/self/fd/0:/dev/stdin")
             .arg("--bind=/proc/self/fd/1:/dev/stdout")
             .arg("--bind=/proc/self/fd/2:/dev/stderr")
-            .arg(format!("--bind={}/proc/.loadavg:/proc/loadavg", config::ARCH_FS_ROOT))
-            .arg(format!("--bind={}/proc/.stat:/proc/stat", config::ARCH_FS_ROOT))
-            .arg(format!("--bind={}/proc/.uptime:/proc/uptime", config::ARCH_FS_ROOT))
-            .arg(format!("--bind={}/proc/.version:/proc/version", config::ARCH_FS_ROOT))
-            .arg(format!("--bind={}/proc/.vmstat:/proc/vmstat", config::ARCH_FS_ROOT))
-            .arg(format!("--bind={}/proc/.sysctl_entry_cap_last_cap:/proc/sys/kernel/cap_last_cap", config::ARCH_FS_ROOT))
-            .arg(format!("--bind={}/proc/.sysctl_inotify_max_user_watches:/proc/sys/fs/inotify/max_user_watches", config::ARCH_FS_ROOT))
-            .arg(format!("--bind={}/sys/.empty:/sys/fs/selinux", config::ARCH_FS_ROOT));
+            .arg(format!("--bind={}/proc/.loadavg:/proc/loadavg", config::arch_fs_root()))
+            .arg(format!("--bind={}/proc/.stat:/proc/stat", config::arch_fs_root()))
+            .arg(format!("--bind={}/proc/.uptime:/proc/uptime", config::arch_fs_root()))
+            .arg(format!("--bind={}/proc/.version:/proc/version", config::arch_fs_root()))
+            .arg(format!("--bind={}/proc/.vmstat:/proc/vmstat", config::arch_fs_root()))
+            .arg(format!("--bind={}/proc/.sysctl_entry_cap_last_cap:/proc/sys/kernel/cap_last_cap", config::arch_fs_root()))
+            .arg(format!("--bind={}/proc/.sysctl_inotify_max_user_watches:/proc/sys/fs/inotify/max_user_watches", config::arch_fs_root()))
+            .arg(format!("--bind={}/sys/.empty:/sys/fs/selinux", config::arch_fs_root()));
 
         if empty_pci_bus() {
             process.arg(format!(
                 "--bind={}/{}:/sys/bus/pci",
-                config::ARCH_FS_ROOT,
+                config::arch_fs_root(),
                 EMPTY_PCI_BUS
             ));
         }
@@ -286,13 +286,13 @@ impl ArchProcess {
         if masked_cpuinfo() {
             process.arg(format!(
                 "--bind={}/{}:/proc/cpuinfo",
-                config::ARCH_FS_ROOT,
+                config::arch_fs_root(),
                 MASKED_CPUINFO
             ));
         }
 
         if let Some(node) = kgsl_render_node() {
-            let base = format!("{}/{}", config::ARCH_FS_ROOT, KGSL_DRM);
+            let base = format!("{}/{}", config::arch_fs_root(), KGSL_DRM);
             process
                 .arg(format!("--bind={base}/sys:/sys/dev/char"))
                 .arg(format!("--bind={base}/dri:/dev/dri"))

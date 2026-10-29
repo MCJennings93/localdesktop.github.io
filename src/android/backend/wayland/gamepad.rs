@@ -11,7 +11,7 @@
 //! Off unless `/root/.config/localdesktop/gamepad-enabled` exists (while it is unfinished: it was
 //! drawn on some frames only and its controls then took touches invisibly).
 
-use crate::core::config::ARCH_FS_ROOT;
+use crate::core::config::arch_fs_root;
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::texture::{TextureBuffer, TextureRenderElement};
 use smithay::backend::renderer::element::Kind;
@@ -105,7 +105,7 @@ pub struct Gamepad {
 }
 
 fn guest(path: &str) -> PathBuf {
-    PathBuf::from(ARCH_FS_ROOT).join(path.trim_start_matches('/'))
+    PathBuf::from(arch_fs_root()).join(path.trim_start_matches('/'))
 }
 
 impl Gamepad {

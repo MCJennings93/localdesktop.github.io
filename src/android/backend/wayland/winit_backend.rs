@@ -235,7 +235,7 @@ pub fn bind(event_loop: &ActiveEventLoop) -> Result<WinitGraphicsBackend<GlesRen
     };
 
     // KWin's buffers are textured in place (smithay patch, `GlesRenderer::import_dmabuf_shared`);
-    // `run-as app.polarbear touch files/dmabuf-copy` before the app starts keeps the CPU copies
+    // `run-as <package> touch files/dmabuf-copy` before the app starts keeps the CPU copies
     // instead, for A/B measurements.
     if crate::android::utils::application_context::get_application_context()
         .data_dir

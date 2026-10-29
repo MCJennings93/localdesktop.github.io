@@ -1,5 +1,5 @@
 //! Frame-timing counters for performance work, enabled by creating `frame-stats` in the app's
-//! files directory (`run-as app.polarbear touch files/frame-stats`) before the app starts.
+//! files directory (`run-as <package> touch files/frame-stats`) before the app starts.
 //! Every 2 s it logs how often the app redrew, how many new client buffers were committed (new
 //! content, e.g. KWin frames), how fast those came while content was changing (`anim`: gaps
 //! under 100 ms, i.e. during an animation, with a histogram of the gaps), and how long
