@@ -62,16 +62,34 @@ JS
     id=$(qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript "$script" localdesktop-gamescope) &&
         qdbus6 org.kde.KWin "/Scripting/Script$id" org.kde.kwin.Script.run >/dev/null
 }
+# Steam updates itself before it draws anything (minutes under FEX for a full client update), and its
+# own progress window doesn't show in Game Mode. localdesktop-steam-progress shows its progress as a
+# notification with a bar until Game Mode's window opens; $STARTING holds its pid meanwhile. Without
+# Python's GObject bindings, a plain notification says Steam is starting.
+STARTING=/run/localdesktop-pad/gamemode-starting
+progress() {
+    if python3 -c 'from gi.repository import Gio' 2>/dev/null; then
+        localdesktop-steam-progress "$1" &
+        echo $! > "$STARTING"
+        wait
+        rm -f "$STARTING"
+    else
+        notify-send -a Steam -i /root/.local/share/Steam/public/steam_tray_posix.png "Steam is starting" \
+            "Game Mode opens when Steam is ready; after a Steam update it can take minutes."
+    fi
+}
 if running; then
     echo "== gamescope is already running"
+    # Still starting (no window to bring back yet): the notification pops up again.
+    [ -f "$STARTING" ] && kill -USR1 "$(cat "$STARTING")" 2>/dev/null
     raise
     # A steam:// link goes to the running client.
     [ $# -gt 0 ] && exec localdesktop-steam "$@"
     exit 0
 fi
 watch
-notify-send -a Steam -i /root/.local/share/Steam/public/steam_tray_posix.png "Steam is starting" \
-    "Game Mode opens in a few seconds; after a Steam update it can take a minute." 2>/dev/null &
+mkdir -p /run/localdesktop-pad && rm -f "$STARTING"
+progress $$ </dev/null &
 # One Steam client at a time: the desktop one goes first.
 localdesktop-steam --shutdown
 # The output starts at the panel's size; the nested backend follows the window KWin gives it.

@@ -17,7 +17,7 @@ set -eu
 PACKAGES="plasma-mobile plasma-nano plasma-settings plasma-keyboard plasma-integration
     breeze breeze-gtk breeze-icons qqc2-breeze-style kde-gtk-config qt6-wayland qt6ct
     angelfish index-fm kasts kclock koko kweather qmlkonsole
-    noto-fonts-emoji vulkan-icd-loader vulkan-tools mesa-utils"
+    noto-fonts-emoji vulkan-icd-loader vulkan-tools mesa-utils python-gobject"
 CONFIG=/etc/localdesktop/localdesktop.toml
 
 echo "== Installing Plasma Mobile packages"

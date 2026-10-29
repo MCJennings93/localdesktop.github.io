@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+# Shows Steam's start in Game Mode as a progress notification: localdesktop-steam-progress <pid>
+# (Game Mode's gamescope; the notification goes away when it ends). Steam updates itself before it
+# draws anything (minutes under FEX for a full client update), and its own progress window doesn't
+# show in Game Mode, so this follows the updater's status lines in Steam's log instead.
+# Plasma draws a progress bar only for a job (org.kde.JobViewServer, what file copies use), and
+# a job lives as long as the D-Bus connection that asked for it: hence a process for the whole start.
+# Steam gives a percentage only while downloading (the bar's first 60%); extracting and installing
+# move the bar a step each. The job ends once the client itself (not the updater) draws, when
+# Game Mode's window opens. SIGUSR1 (opening Steam again meanwhile) shows the notification again.
+# Output goes to /tmp/gamemode.log, through localdesktop-gamemode.
+import os
+import re
+import signal
+import sys
+import time
+
+from gi.repository import Gio, GLib
+
+LOG = "/tmp/steam-run.log"
+JOB = "org.kde.JobViewV2"
+
+
+class Job:
+    def __init__(self):
+        self.bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+        self.path = None
+        self.step, self.percent, self.done, self.total = "Checking for updates", 0, 0, 0
+
+    def call(self, path, iface, method, sig, args, ret=None):
+        return self.bus.call_sync("org.kde.JobViewServer", path, iface, method, GLib.Variant(sig, args),
+                                  GLib.VariantType(ret) if ret else None, Gio.DBusCallFlags.NONE, -1, None)
+
+    def set(self, method, sig, *args):
+        self.call(self.path, JOB, method, sig, args)
+
+    # A new job shows a new popup, with everything known so far. Transient: no "finished"
+    # notification stays behind.
+    def show(self):
+        self.end()
+        hints = {"transient": GLib.Variant("b", True)}
+        self.path = self.call("/JobViewServer", "org.kde.JobViewServerV2", "requestView", "(sia{sv})",
+                              ("localdesktop-steam", 0, hints), "(o)").unpack()[0]
+        self.update(self.step, self.percent, self.done, self.total)
+
+    # Download sizes show under Details; 0 of 0 hides them.
+    def update(self, step, percent, done=0, total=0):
+        self.set("setInfoMessage", "(s)", step)
+        self.set("setTotalAmount", "(ts)", total, "bytes")
+        self.set("setProcessedAmount", "(ts)", done, "bytes")
+        self.set("setPercent", "(u)", percent)
+        self.step, self.percent, self.done, self.total = step, percent, done, total
+
+    def end(self):
+        if self.path:
+            self.set("terminate", "(s)", "")
+            self.path = None
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def main():
+    gamescope = int(sys.argv[1])
+    job = Job()
+    again = []
+    signal.signal(signal.SIGUSR1, lambda *_: again.append(1))
+    # Killed (Game Mode or the session ending): the job ends too rather than stay frozen.
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, lambda *_: (job.end(), sys.exit(0)))
+    log = open(LOG, errors="replace")
+    log.seek(0, os.SEEK_END)
+    job.show()
+    client = False
+    while alive(gamescope):
+        if again:
+            again.clear()
+            job.show()
+        line = log.readline()
+        if not line:
+            time.sleep(0.25)
+            continue
+        step, percent, done, total = job.step, job.percent, job.done, job.total
+        if m := re.search(r"Downloading update \((\d+) of (\d+) KB\)", line):
+            step, done, total = "Downloading update", int(m[1]) * 1024, int(m[2]) * 1024
+        elif m := re.search(r"Set percent complete: (\d+)", line):
+            if step != "Downloading update":
+                continue
+            percent = int(m[1]) * 60 // 100
+        elif "Set status message: Downloading update" in line or "Set status message: Checking for" in line:
+            continue
+        elif "Set status message: Extracting package" in line:
+            step, percent, done, total = "Extracting update", 65, 0, 0
+        elif "Set status message: Installing update" in line:
+            step, percent = "Installing update", 80
+        # After an update the client restarts and its updater checks the install again.
+        elif "Set status message: Update complete" in line:
+            step, percent = "Opening Game Mode", 90
+        elif "setting LIBGL_KOPPER_DISABLE=true for steamwebhelper" in line:
+            client, step, percent = True, "Opening Game Mode", 95
+        elif "Gamescope WSI] Created swapchain" in line:
+            if client:
+                break
+            continue
+        else:
+            continue
+        if (step, percent, done, total) != (job.step, job.percent, job.done, job.total):
+            job.update(step, percent, done, total)
+    job.end()
+
+
+main()
