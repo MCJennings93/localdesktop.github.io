@@ -6,6 +6,9 @@
 # idle desktop. Usage: ld-shadejank <label> [cycles, default 15]
 # LD_PKG picks the app: io.github.localdesktop (default) or app.polarbear (builds before the rename).
 PKG=${LD_PKG:-io.github.localdesktop}
+# SHELL_PROC: the session process whose environment launched apps get (plasmashell; xfce4-panel
+# for the Xfce session).
+SHELL_PROC=${SHELL_PROC:-plasmashell}
 set -u
 LABEL=$1; N=${2:-15}
 D=~/localdesktop-bench/shadejank-$LABEL; rm -rf "$D"; mkdir -p "$D"
@@ -15,9 +18,9 @@ build=$(adb shell "run-as $PKG cat files/arch/etc/localdesktop/build-id" | tr -d
 "$HERE"/ld-run 'pkill -TERM -f /usr/lib/firefox/firefox; pkill -TERM -f "brave-origin-nightly/brave "; sleep 2; true' 20 >/dev/null
 case ${BROWSER:-none} in
 firefox)
-    "$HERE"/ld-run "rm -rf /tmp/ffjank; cp -a /root/greentest/ff-template /tmp/ffjank; P=\$(pgrep -x plasmashell); (xargs -0 -a /proc/\$P/environ sh -c 'exec env -i \"\$@\" timeout -s TERM $((N * 4 + 60)) firefox --no-remote --profile /tmp/ffjank $URL' sh > /tmp/shadejank-browser.log 2>&1 &); echo started" 30 >/dev/null ;;
+    "$HERE"/ld-run "rm -rf /tmp/ffjank; cp -a /root/greentest/ff-template /tmp/ffjank; P=\$(pgrep -x $SHELL_PROC); (xargs -0 -a /proc/\$P/environ sh -c 'exec env -i \"\$@\" timeout -s TERM $((N * 4 + 60)) firefox --no-remote --profile /tmp/ffjank $URL' sh > /tmp/shadejank-browser.log 2>&1 &); echo started" 30 >/dev/null ;;
 brave)
-    "$HERE"/ld-run "rm -rf /tmp/bjank; cp -a /root/greentest/profile-template /tmp/bjank; P=\$(pgrep -x plasmashell); (xargs -0 -a /proc/\$P/environ sh -c 'exec env -i \"\$@\" timeout -s TERM $((N * 4 + 60)) brave-origin-nightly --user-data-dir=/tmp/bjank --no-first-run --start-maximized --autoplay-policy=no-user-gesture-required $URL' sh > /tmp/shadejank-browser.log 2>&1 &); echo started" 30 >/dev/null ;;
+    "$HERE"/ld-run "rm -rf /tmp/bjank; cp -a /root/greentest/profile-template /tmp/bjank; P=\$(pgrep -x $SHELL_PROC); (xargs -0 -a /proc/\$P/environ sh -c 'exec env -i \"\$@\" timeout -s TERM $((N * 4 + 60)) brave-origin-nightly --user-data-dir=/tmp/bjank --no-first-run --start-maximized --autoplay-policy=no-user-gesture-required $URL' sh > /tmp/shadejank-browser.log 2>&1 &); echo started" 30 >/dev/null ;;
 esac
 if [ "${BROWSER:-none}" != none ]; then
     sleep 18
