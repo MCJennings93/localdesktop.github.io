@@ -224,6 +224,24 @@ static int drm_version(int fd, unsigned long request, void *arg, int *rc) {
   return 1;
 }
 
+/* libdrm's drmIsMaster() asks DRM_IOCTL_AUTH_MAGIC, which a real render node refuses with
+ * EACCES. KGSL answers ENOTTY instead, so libdrm takes the node for a primary one that this
+ * process masters, and wlroots (labwc) then tries to lease it ("drmModeCreateLease failed")
+ * instead of reopening it as a render node, and gets no allocator. Answer as a render node. */
+struct drm_auth {
+  unsigned int magic;
+};
+#define DRM_AUTH_MAGIC _IOW('d', 0x11, struct drm_auth)
+
+static int drm_auth_magic(int fd, unsigned long request, int *rc) {
+  if (request != DRM_AUTH_MAGIC || !is_kgsl(fd)) {
+    return 0;
+  }
+  errno = EACCES;
+  *rc = -1;
+  return 1;
+}
+
 /* Turnip-KGSL allocates every shareable buffer (KWin's output buffers among them) from
  * /dev/dma_heap/system. Android's Adreno driver, in the Local Desktop app, can texture from
  * these buffers without copying them, but only when their last 8 KiB hold the metadata block it
@@ -273,7 +291,8 @@ int ioctl(int fd, unsigned long request, ...) {
   void *arg = va_arg(ap, void *);
   va_end(ap);
   int rc;
-  if (bl_drm_gem_close(fd, request, arg, &rc) || drm_version(fd, request, arg, &rc)) {
+  if (bl_drm_gem_close(fd, request, arg, &rc) || drm_version(fd, request, arg, &rc) ||
+      drm_auth_magic(fd, request, &rc)) {
     return rc;
   }
   pad_dma_heap_alloc(fd, request, arg);
