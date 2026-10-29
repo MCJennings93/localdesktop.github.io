@@ -242,6 +242,29 @@ static int drm_auth_magic(int fd, unsigned long request, int *rc) {
   return 1;
 }
 
+/* PRIME is emulated above (drmPrimeFDToHandle/drmPrimeHandleToFD over dmabufs), but KGSL
+ * rejects DRM_IOCTL_GET_CAP, and wlroots' GBM allocator checks DRM_CAP_PRIME before using it
+ * ("PRIME export not supported"). Report import and export; other capabilities go on (the
+ * syncobj ones to kgsl-syncobj). */
+struct drm_get_cap {
+  uint64_t capability;
+  uint64_t value;
+};
+#define DRM_GET_CAP _IOWR('d', 0x0c, struct drm_get_cap)
+#define DRM_CAP_PRIME 0x5
+#define DRM_PRIME_CAP_IMPORT 0x1
+#define DRM_PRIME_CAP_EXPORT 0x2
+
+static int drm_get_cap_prime(int fd, unsigned long request, void *arg, int *rc) {
+  if (request != DRM_GET_CAP || !arg || ((struct drm_get_cap *)arg)->capability != DRM_CAP_PRIME ||
+      !is_kgsl(fd)) {
+    return 0;
+  }
+  ((struct drm_get_cap *)arg)->value = DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT;
+  *rc = 0;
+  return 1;
+}
+
 /* Turnip-KGSL allocates every shareable buffer (KWin's output buffers among them) from
  * /dev/dma_heap/system. Android's Adreno driver, in the Local Desktop app, can texture from
  * these buffers without copying them, but only when their last 8 KiB hold the metadata block it
@@ -292,7 +315,7 @@ int ioctl(int fd, unsigned long request, ...) {
   va_end(ap);
   int rc;
   if (bl_drm_gem_close(fd, request, arg, &rc) || drm_version(fd, request, arg, &rc) ||
-      drm_auth_magic(fd, request, &rc)) {
+      drm_auth_magic(fd, request, &rc) || drm_get_cap_prime(fd, request, arg, &rc)) {
     return rc;
   }
   pad_dma_heap_alloc(fd, request, arg);
