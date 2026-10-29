@@ -143,12 +143,97 @@ fn probe_frame(pixels: &[u8], stride: usize, width: i32, height: i32, format: Fo
 }
 
 /// A client committed a new buffer.
+/// Why frame callbacks went out: with a redraw (the app's own loop), on a display refresh, or as
+/// soon as a commit was taken.
+#[derive(Clone, Copy)]
+pub enum Release {
+    Redraw,
+    Vsync,
+    Commit,
+}
+
+/// Frame-callback timing: how long a client's new frame waited for its callbacks (commit to
+/// release), and how long the client took to produce the next frame (release to commit).
+#[derive(Default)]
+struct Callbacks {
+    last_release: Option<Instant>,
+    /// The first commit since the last release, which the next release answers.
+    pending_commit: Option<Instant>,
+    released: [u64; 3],
+    wait: Duration,
+    wait_max: Duration,
+    waits: u64,
+    produce: Duration,
+    produces: u64,
+}
+
+static CALLBACKS: Mutex<Callbacks> = Mutex::new(Callbacks {
+    last_release: None,
+    pending_commit: None,
+    released: [0; 3],
+    wait: Duration::ZERO,
+    wait_max: Duration::ZERO,
+    waits: 0,
+    produce: Duration::ZERO,
+    produces: 0,
+});
+
+/// Frame callbacks went out to the clients' surfaces.
+pub fn callbacks_released(why: Release) {
+    if !enabled() {
+        return;
+    }
+    let now = Instant::now();
+    let mut cb = CALLBACKS.lock().unwrap();
+    cb.released[why as usize] += 1;
+    if let Some(commit) = cb.pending_commit.take() {
+        let wait = now - commit;
+        cb.wait += wait;
+        cb.wait_max = cb.wait_max.max(wait);
+        cb.waits += 1;
+    }
+    cb.last_release = Some(now);
+}
+
+fn callback_commit(now: Instant) {
+    let mut cb = CALLBACKS.lock().unwrap();
+    if cb.pending_commit.is_none() {
+        cb.pending_commit = Some(now);
+        if let Some(release) = cb.last_release {
+            cb.produce += now - release;
+            cb.produces += 1;
+        }
+    }
+}
+
+fn take_callbacks() -> String {
+    let mut cb = CALLBACKS.lock().unwrap();
+    let ms = |d: Duration, n: u64| d.as_secs_f64() * 1000.0 / n.max(1) as f64;
+    let text = format!(
+        "cb[redraw={} vsync={} commit={} wait avg={:.2}ms max={:.2}ms produce avg={:.2}ms]",
+        cb.released[Release::Redraw as usize],
+        cb.released[Release::Vsync as usize],
+        cb.released[Release::Commit as usize],
+        ms(cb.wait, cb.waits),
+        ms(cb.wait_max, 1),
+        ms(cb.produce, cb.produces),
+    );
+    cb.released = [0; 3];
+    cb.wait = Duration::ZERO;
+    cb.wait_max = Duration::ZERO;
+    cb.waits = 0;
+    cb.produce = Duration::ZERO;
+    cb.produces = 0;
+    text
+}
+
 pub fn buffer_committed() {
     if !enabled() {
         return;
     }
     COMMITS.fetch_add(1, Ordering::Relaxed);
     let now = Instant::now();
+    callback_commit(now);
     let mut gaps = GAPS.lock().unwrap();
     if let Some(gap) = gaps.last.map(|last| now - last) {
         let ms = gap.as_millis() as u64;
@@ -222,10 +307,11 @@ pub fn redrawn(render: Duration, swap: Duration) {
     let n = window.redraws.max(1) as f64;
     let ms = |d: Duration| d.as_secs_f64() * 1000.0;
     log::info!(
-        "frame-stats: redraws={:.1}/s new-buffers={:.1}/s {} probed={} green={} (total {}) sync[frames={} mixed={} stale={}] render avg={:.2}ms max={:.2}ms swap avg={:.2}ms max={:.2}ms",
+        "frame-stats: redraws={:.1}/s new-buffers={:.1}/s {} {} probed={} green={} (total {}) sync[frames={} mixed={} stale={}] render avg={:.2}ms max={:.2}ms swap avg={:.2}ms max={:.2}ms",
         window.redraws as f64 / secs,
         COMMITS.swap(0, Ordering::Relaxed) as f64 / secs,
         take_gaps(),
+        take_callbacks(),
         PROBED.swap(0, Ordering::Relaxed),
         GREEN.swap(0, Ordering::Relaxed),
         GREEN_TOTAL.load(Ordering::Relaxed),

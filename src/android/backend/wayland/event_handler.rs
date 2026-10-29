@@ -530,6 +530,7 @@ fn redraw(backend: &mut WaylandBackend) -> Result<(), String> {
         for surface in compositor.state.xdg_shell_state.toplevel_surfaces() {
             send_frames_surface_tree(surface.wl_surface(), time);
         }
+        super::frame_stats::callbacks_released(super::frame_stats::Release::Redraw);
         flush_clients(compositor);
     }
     let Some(winit) = backend.graphic_renderer.as_mut() else {
