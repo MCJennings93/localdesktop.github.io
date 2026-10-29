@@ -12,8 +12,9 @@ Where this fork is going, from the working notes in [docs/dev-notes.md](docs/dev
 - Later: a desktop spanning the phone and external displays.
 
 ## Control baseline
-Tag `control-2026-10-29-merged` (package `io.github.localdesktop`, APK `ld-20261029-m1-merged`): our
-work plus upstream's commits up to 0543368 except #328, upstream's own GPU stack. Every fix or
+Tag `control-2026-10-29-v2` (package `io.github.localdesktop`, APK `ld-20261029-m2-relative-paths`):
+our work plus upstream's commits up to 0543368 except #328, upstream's own GPU stack. Paths follow the
+package name, so test copies can be installed under other names. Every fix or
 feature below starts on its own branch from it and is compared against it. (The earlier
 `control-2026-10-29` predates the merge.)
 
@@ -25,7 +26,7 @@ Steam's UI.
 ## Next: graphics stacks A/B
 Our GPU stack (KWin GPU compositing, fake KGSL render node, zero-copy import, explicit sync)
 against upstream's #328 (own Mesa build, frame clock, hardware-buffer uploads), in a second
-install, before deciding what to keep.
+install ("Local Desktop B", branch `test/graphics-328-b`), before deciding what to keep.
 
 ## Steam and Game Mode
 The user picks the order.
