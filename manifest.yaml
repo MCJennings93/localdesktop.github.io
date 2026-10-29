@@ -16,7 +16,7 @@ android:
       min_sdk_version: 24
       target_sdk_version: 36
     application:
-      label: "Local Desktop"
+      label: "Local Desktop 3"
       extract_native_libs: true # Required for proot invocations
       use_cleartext_traffic: true # Required for connecting to ws://127.0.0.1, see assets/setup-progress.html
       services:
