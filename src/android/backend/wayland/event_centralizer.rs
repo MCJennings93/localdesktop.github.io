@@ -146,7 +146,7 @@ pub fn centralize(event: WindowEvent, backend: &mut WaylandBackend) -> Centraliz
         }
         // Touches on the on-screen gamepad's controls (Game Mode) never reach the session.
         WindowEvent::Touch(touch) if backend.gamepad.claim(&touch, window_size(backend)) => {
-            backend.compositor.state.needs_redraw = true;
+            backend.compositor.state.render_pending = true;
             CentralizedEvent::Unsupported
         }
         WindowEvent::Touch(Touch {

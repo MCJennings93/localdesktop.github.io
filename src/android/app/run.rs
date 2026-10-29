@@ -4,8 +4,8 @@ use crate::android::{
     backend::{
         pipewire_standalone_aaudio,
         wayland::{
-            bind, centralize, centralize_injected_keyboard, dispatch_clients, flush_clients,
-            handle, write_guest_output_state, CentralizedEvent, State,
+            bind, centralize, centralize_injected_keyboard, dispatch_clients, handle, idle,
+            on_vsync, start_frame_loop, write_guest_output_state, CentralizedEvent, State,
         },
         webview::ErrorVariant,
     },
@@ -34,6 +34,7 @@ fn configure_output(backend: &mut crate::android::backend::wayland::WaylandBacke
     // default on the first launch and only becomes accurate after a configuration change.
     let guest_scale_factor = ndk::scale_factor(&backend.android_app);
     backend.guest_scale_factor = guest_scale_factor;
+    backend.refresh_millihz = ndk::refresh_rate_millihz(&backend.android_app);
 
     let output = backend
         .compositor
@@ -56,12 +57,11 @@ fn configure_output(backend: &mut crate::android::backend::wayland::WaylandBacke
         backend.compositor.output_global = Some(output.create_global::<State>(&dh));
     }
 
-    let refresh = ndk::refresh_rate_mhz(&backend.android_app).unwrap_or(60000);
-    log::info!("Output mode {}x{} @ {} mHz", size.0, size.1, refresh);
+    log::info!("Output mode {}x{} @ {} mHz", size.0, size.1, backend.refresh_millihz);
     output.change_current_state(
         Some(Mode {
             size: size.into(),
-            refresh,
+            refresh: backend.refresh_millihz,
         }),
         Some(Transform::Normal),
         Some(Scale::Integer(1)),
@@ -119,9 +119,7 @@ impl ApplicationHandler<AppUserEvent> for PolarBearApp {
                 configure_output(backend);
                 accessibility::set_runtime_active(true);
 
-                if let Some(winit) = backend.graphic_renderer.as_ref() {
-                    winit.window().request_redraw();
-                }
+                start_frame_loop(backend, &self.frontend.proxy);
                 handle(CentralizedEvent::Redraw, backend, event_loop);
                 launch();
                 // Start the standalone-client PipeWire/AAudio backend.
@@ -136,26 +134,27 @@ impl ApplicationHandler<AppUserEvent> for PolarBearApp {
             return;
         };
 
-        if let AppUserEvent::WaylandReady = event {
-            dispatch_clients(&mut backend.compositor);
-            if backend.compositor.state.needs_redraw {
-                if let Some(winit) = backend.graphic_renderer.as_ref() {
-                    winit.window().request_redraw();
+        match event {
+            AppUserEvent::AccessibilityInputReady => {
+                for event in accessibility::drain_pending_events() {
+                    let event = centralize_injected_keyboard(
+                        event.scancode,
+                        event.state,
+                        event.event_time_ms,
+                        backend,
+                    );
+                    handle(event, backend, event_loop);
                 }
             }
-            return;
+            AppUserEvent::WaylandReady => dispatch_clients(backend),
+            AppUserEvent::Vsync => on_vsync(backend),
         }
+    }
 
-        for event in accessibility::drain_pending_events() {
-            let event = centralize_injected_keyboard(
-                event.scancode,
-                event.state,
-                event.event_time_ms,
-                backend,
-            );
-            handle(event, backend, event_loop);
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let PolarBearBackend::Wayland(backend) = &mut self.backend {
+            idle(backend, event_loop);
         }
-        flush_clients(&mut backend.compositor);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -172,28 +171,11 @@ impl ApplicationHandler<AppUserEvent> for PolarBearApp {
                 return;
             }
 
-            // The app only redraws when something changed (see `wake`), so a new window size or
-            // display needs a frame of its own.
-            let window_changed = matches!(
-                event,
-                WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } | WindowEvent::Occluded(false)
-            );
-
             // Map raw events to our own events
             let event = centralize(event, backend);
 
             // Handle the centralized events
             handle(event, backend, event_loop);
-
-            // Input goes out to clients now rather than at the next redraw; a finger held down
-            // keeps redraws going for long-press detection.
-            flush_clients(&mut backend.compositor);
-            if window_changed || !backend.touch_points.is_empty() || backend.compositor.state.needs_redraw {
-                backend.compositor.state.needs_redraw = true;
-                if let Some(winit) = backend.graphic_renderer.as_ref() {
-                    winit.window().request_redraw();
-                }
-            }
         }
     }
 
