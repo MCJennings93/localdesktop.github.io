@@ -555,7 +555,31 @@ pub fn dispatch_clients(backend: &mut WaylandBackend) {
     if let Some(watcher) = &backend.watcher {
         watcher.rearm();
     }
+    // A client that committed a new frame may start the next one at once, before this one is
+    // drawn (as the control's loop let it), but not more than once per display refresh (as
+    // upstream #328's loop paces it): a slow producer, such as labwc drawing on the CPU, keeps its
+    // own pace instead of losing up to a refresh each frame, and a fast one, such as KWin on the
+    // GPU, runs at the display's rate rather than at our swaps'. Otherwise the next vsync releases.
+    let period = Duration::from_secs_f64(1000.0 / backend.refresh_millihz.max(1000) as f64);
+    let due = backend
+        .callbacks_released_at
+        .map_or(true, |at| at.elapsed() >= period);
+    if backend.compositor.state.frame_pending && due && backend.graphic_renderer.is_some() {
+        release_frame_callbacks(backend, super::frame_stats::Release::Commit);
+    }
     schedule_frame(backend);
+}
+
+/// Let the clients' surfaces start on their next frame.
+fn release_frame_callbacks(backend: &mut WaylandBackend, why: super::frame_stats::Release) {
+    let compositor = &mut backend.compositor;
+    compositor.state.frame_pending = false;
+    let time = compositor.start_time.elapsed().as_millis() as u32;
+    for surface in compositor.state.xdg_shell_state.toplevel_surfaces() {
+        send_frames_surface_tree(surface.wl_surface(), time);
+    }
+    backend.callbacks_released_at = Some(Instant::now());
+    super::frame_stats::callbacks_released(why);
 }
 
 /// The display is about to refresh: draw what arrived since the last frame and let clients
@@ -573,14 +597,8 @@ pub fn on_vsync(backend: &mut WaylandBackend) {
         render_frame(backend);
     }
 
-    let compositor = &mut backend.compositor;
-    if compositor.state.frame_pending {
-        compositor.state.frame_pending = false;
-        let time = compositor.start_time.elapsed().as_millis() as u32;
-        for surface in compositor.state.xdg_shell_state.toplevel_surfaces() {
-            send_frames_surface_tree(surface.wl_surface(), time);
-        }
-        super::frame_stats::callbacks_released(super::frame_stats::Release::Vsync);
+    if backend.compositor.state.frame_pending {
+        release_frame_callbacks(backend, super::frame_stats::Release::Vsync);
     }
 
     schedule_frame(backend);

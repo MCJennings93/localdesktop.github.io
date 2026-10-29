@@ -1554,6 +1554,7 @@ pub fn setup(android_app: AndroidApp) -> PolarBearBackend {
             watcher: None,
             frame_clock: None,
             rendered_since_vsync: false,
+            callbacks_released_at: None,
             android_app,
         })
     } else {

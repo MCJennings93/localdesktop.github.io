@@ -77,6 +77,8 @@ pub struct WaylandBackend {
     pub frame_clock: Option<FrameClock>,
     /// A frame was already submitted for the upcoming refresh, so the next one waits for vsync.
     pub rendered_since_vsync: bool,
+    /// When frame callbacks last went out (see `release_frame_callbacks`).
+    pub callbacks_released_at: Option<std::time::Instant>,
 }
 
 impl WaylandBackend {
