@@ -12,7 +12,7 @@ Where this fork is going, from the working notes in [docs/dev-notes.md](docs/dev
 - Later: a desktop spanning the phone and external displays.
 
 ## Control baseline
-Tag `control-2026-10-29`, APK `ld-20261029-d-steamjob`. Every fix or feature below starts on its
+Tag `control-2026-10-29`, APK `ld-20261029-e-agnostic`. Every fix or feature below starts on its
 own branch from it and is compared against it.
 
 What works there: Plasma Mobile with KWin GPU compositing and zero-copy dmabuf import; Brave and
