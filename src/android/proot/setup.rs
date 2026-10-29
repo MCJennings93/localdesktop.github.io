@@ -932,6 +932,12 @@ export PULSE_SERVER={PULSE_GUEST_SERVER}
 export XDG_RUNTIME_DIR
 # Electron adds --no-sandbox when this is set; Android has no user namespaces for it to use.
 export ELECTRON_DISABLE_SANDBOX=1
+# GPU rendering through the app's render node (see /usr/local/lib/localdesktop-gpu-env.sh): labwc
+# composites on the GPU, as KWin does in the Plasma Mobile session, and apps render on Zink.
+if [ -r /usr/local/lib/localdesktop-gpu-env.sh ]; then
+    . /usr/local/lib/localdesktop-gpu-env.sh
+    export LD_PRELOAD="${{LD_PRELOAD:+$LD_PRELOAD }}${{LOCALDESKTOP_GPU_PRELOAD# }}"
+fi
 exec startxfce4 --wayland "$@"
 "#
         ),
