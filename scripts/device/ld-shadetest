@@ -8,8 +8,8 @@
 # screenshots miss. URL= opens another page; PROFILE_SRC= copies another Brave profile (e.g. the
 # user's, /root/.config/BraveSoftware/Brave-Origin-Nightly) instead of the test template. ENV= adds
 # environment variables for Brave (e.g. ENV=ZINK_DEBUG=noreorder).
-# LD_PKG picks the app: app.polarbear (default) or io.github.localdesktop (upstream package name).
-PKG=${LD_PKG:-app.polarbear}
+# LD_PKG picks the app: io.github.localdesktop (default) or app.polarbear (builds before the rename).
+PKG=${LD_PKG:-io.github.localdesktop}
 set -eu
 LABEL=$1; N=${2:-20}; FLAGS=${3:-}
 D=~/localdesktop-bench/shade-$LABEL; rm -rf "$D"; mkdir -p "$D"

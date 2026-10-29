@@ -1,8 +1,8 @@
 #!/bin/sh
 # Installs an APK from ~/localdesktop-bench/apks/, restarts Local Desktop, checks that the shell is
 # up, then runs ld-framebench twice under the build's ID. Usage: ld-abrun <build-id>
-# LD_PKG picks the app: app.polarbear (default) or io.github.localdesktop (upstream package name).
-PKG=${LD_PKG:-app.polarbear}
+# LD_PKG picks the app: io.github.localdesktop (default) or app.polarbear (builds before the rename).
+PKG=${LD_PKG:-io.github.localdesktop}
 set -eu
 ID=$1
 S=~/localdesktop-bench/ab-$ID; mkdir -p "$S"

@@ -6,8 +6,8 @@
 # BROWSER=firefox uses Firefox with /root/greentest/ff-template (autoplay on, uBlock Origin
 # installed) instead of Brave, for comparison.
 # Usage: ld-videopool <out-dir> <arm-label> <launches> [browser flags]
-# LD_PKG picks the app: app.polarbear (default) or io.github.localdesktop (upstream package name).
-PKG=${LD_PKG:-app.polarbear}
+# LD_PKG picks the app: io.github.localdesktop (default) or app.polarbear (builds before the rename).
+PKG=${LD_PKG:-io.github.localdesktop}
 set -u
 OUT=$1; ARM=$2; N=$3; FLAGS=${4:-}
 mkdir -p "$OUT"

@@ -4,8 +4,8 @@
 # frame-time percentiles), plus the CPU time the app's processes used meanwhile.
 # BROWSER=firefox|brave plays a YouTube video fullscreen first; BROWSER=none (default) measures the
 # idle desktop. Usage: ld-shadejank <label> [cycles, default 15]
-# LD_PKG picks the app: app.polarbear (default) or io.github.localdesktop (upstream package name).
-PKG=${LD_PKG:-app.polarbear}
+# LD_PKG picks the app: io.github.localdesktop (default) or app.polarbear (builds before the rename).
+PKG=${LD_PKG:-io.github.localdesktop}
 set -u
 LABEL=$1; N=${2:-15}
 D=~/localdesktop-bench/shadejank-$LABEL; rm -rf "$D"; mkdir -p "$D"

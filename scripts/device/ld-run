@@ -3,8 +3,8 @@
 # the GPU works, unlike ld-exec's run-as), with the session's environment. Needs the runner
 # loop in /usr/local/bin/startplasmamobile-localdesktop and the app in the foreground.
 # Usage: ld-run 'vulkaninfo --summary' [timeout-seconds, default 60]
-# LD_PKG picks the app: app.polarbear (default) or io.github.localdesktop (upstream package name).
-PKG=${LD_PKG:-app.polarbear}
+# LD_PKG picks the app: io.github.localdesktop (default) or app.polarbear (builds before the rename).
+PKG=${LD_PKG:-io.github.localdesktop}
 CMD=$1
 T=${2:-60}
 N=r$$

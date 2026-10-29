@@ -4,8 +4,8 @@
 # Needs the APK with the green probe, files/frame-stats present at app start, and the test video
 # in /root/greentest (gray1080.webm + index.html). Results go to ~/localdesktop-bench/green-<label>.log.
 # Usage: ld-greentest <label> [seconds, default 300] [brave flags, default --start-fullscreen]
-# LD_PKG picks the app: app.polarbear (default) or io.github.localdesktop (upstream package name).
-PKG=${LD_PKG:-app.polarbear}
+# LD_PKG picks the app: io.github.localdesktop (default) or app.polarbear (builds before the rename).
+PKG=${LD_PKG:-io.github.localdesktop}
 set -eu
 LABEL=$1
 SECS=${2:-300}

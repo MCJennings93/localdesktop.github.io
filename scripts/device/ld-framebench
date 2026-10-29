@@ -6,8 +6,8 @@
 # and swap times) and CPU seconds of the app, KWin and plasmashell.
 # Needs the app running with files/frame-stats present (the app reads it at start).
 # Usage: ld-framebench [label]
-# LD_PKG picks the app: app.polarbear (default) or io.github.localdesktop (upstream package name).
-PKG=${LD_PKG:-app.polarbear}
+# LD_PKG picks the app: io.github.localdesktop (default) or app.polarbear (builds before the rename).
+PKG=${LD_PKG:-io.github.localdesktop}
 LABEL=${1:-run}
 OUT=${LD_FRAMEBENCH_DIR:-$HOME/localdesktop-bench}/$LABEL-$(date +%m%d-%H%M%S)
 mkdir -p "$OUT"

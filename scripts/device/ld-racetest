@@ -6,8 +6,8 @@
 #   gpuload: guest GPU load (/tmp/gpuload, guest/tools/gpuload.c) delays the app's GPU work.
 #   shade:   six Android notification-shade pulls during the recording.
 # Results go to ~/localdesktop-bench/race-<label>/. Needs ffmpeg and python3-numpy on the PC.
-# LD_PKG picks the app: app.polarbear (default) or io.github.localdesktop (upstream package name).
-PKG=${LD_PKG:-app.polarbear}
+# LD_PKG picks the app: io.github.localdesktop (default) or app.polarbear (builds before the rename).
+PKG=${LD_PKG:-io.github.localdesktop}
 set -u
 LABEL=$1; ITER=${2:-50}; EXTRA=${3:-}
 D=~/localdesktop-bench/race-$LABEL; rm -rf "$D"; mkdir -p "$D"

@@ -2,8 +2,8 @@
 # Runs /root/synctest fullscreen in the live session and sums the frame-stats sync counters
 # (mixed = partly drawn frames, stale = old frames shown again). Usage:
 #   ld-synctest <label> [seconds, default 30] [iterations, default 3000] [passes, default 1] [env assignments...]
-# LD_PKG picks the app: app.polarbear (default) or io.github.localdesktop (upstream package name).
-PKG=${LD_PKG:-app.polarbear}
+# LD_PKG picks the app: io.github.localdesktop (default) or app.polarbear (builds before the rename).
+PKG=${LD_PKG:-io.github.localdesktop}
 set -eu
 LABEL=$1; SECS=${2:-30}; ITER=${3:-3000}; PASSES=${4:-1}; shift 4 2>/dev/null || shift $#
 ENVS="$*"

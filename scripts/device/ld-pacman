@@ -2,8 +2,8 @@
 # Install packages into Local Desktop's Arch proot when the guest has no network under run-as:
 # resolve URLs inside the guest (against its current sync DBs), download on the PC, push into
 # pacman's cache, then install offline. Usage: ld-pacman pkg1 pkg2 ...
-# LD_PKG picks the app: app.polarbear (default) or io.github.localdesktop (upstream package name).
-PKG=${LD_PKG:-app.polarbear}
+# LD_PKG picks the app: io.github.localdesktop (default) or app.polarbear (builds before the rename).
+PKG=${LD_PKG:-io.github.localdesktop}
 set -e
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 ld-exec "pacman -Sp --needed $*" 2>/dev/null | tr -d '\r' | grep -E '^https?://' > "$W/urls" || true

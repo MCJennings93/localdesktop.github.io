@@ -1,8 +1,8 @@
 #!/bin/sh
 # Run a shell command inside Local Desktop's Arch proot on the phone, as the app does.
 # Usage: ld-exec 'pacman -Q kwin'
-# LD_PKG picks the app: app.polarbear (default) or io.github.localdesktop (upstream package name).
-PKG=${LD_PKG:-app.polarbear}
+# LD_PKG picks the app: io.github.localdesktop (default) or app.polarbear (builds before the rename).
+PKG=${LD_PKG:-io.github.localdesktop}
 APK=$(adb shell pm path $PKG | tr -d '\r' | sed 's/^package://')
 LIB=$(dirname "$APK")/lib/arm64
 D=/data/data/$PKG/files
