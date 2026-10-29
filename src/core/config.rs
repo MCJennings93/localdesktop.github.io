@@ -18,7 +18,12 @@ static ARCH_FS_ROOT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 #[cfg(not(test))]
 pub fn set_arch_fs_root(files_dir: &std::path::Path) {
     let files_dir = fs::canonicalize(files_dir).unwrap_or_else(|_| files_dir.to_path_buf());
-    let _ = ARCH_FS_ROOT.set(files_dir.join("arch").to_string_lossy().into_owned());
+    let root = files_dir.join("arch").to_string_lossy().into_owned();
+    // The bundled libxkbcommon (patches/build-libxkbcommon) is built with the main package's
+    // paths; these point it at this install's keymaps and compose tables instead.
+    std::env::set_var("XKB_CONFIG_ROOT", format!("{root}/usr/share/X11/xkb"));
+    std::env::set_var("XLOCALEDIR", format!("{root}/usr/share/X11/locale"));
+    let _ = ARCH_FS_ROOT.set(root);
 }
 
 #[cfg(not(test))]
