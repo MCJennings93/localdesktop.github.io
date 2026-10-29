@@ -25,6 +25,15 @@ export PLASMA_PLATFORM=phone:handset QT_ENABLE_GLYPH_CACHE_WORKAROUND=1
 export XDG_CONFIG_DIRS="$HOME/.config/plasma-mobile:/etc/xdg"
 export QTWEBENGINE_DISABLE_SANDBOX=1 ELECTRON_DISABLE_SANDBOX=1
 export XCURSOR_THEME=breeze_cursors XCURSOR_SIZE=24
+# The application menu Plasma's launchers read (the app drawer is built from it):
+# plasma-applications.menu, as Plasma's own startplasma selects. KService 6.31 no longer falls back
+# to it when XDG_MENU_PREFIX is unset, and the drawer showed no apps. The application database
+# (ksycoca) doesn't notice a new prefix by itself, so it is rebuilt once when the prefix changes.
+export XDG_MENU_PREFIX=plasma-
+MENU_STAMP="$HOME/.cache/localdesktop-menu-prefix"
+if [ "$(cat "$MENU_STAMP" 2>/dev/null)" != "$XDG_MENU_PREFIX" ]; then
+    kbuildsycoca6 --noincremental && printf '%s\n' "$XDG_MENU_PREFIX" >"$MENU_STAMP"
+fi
 
 # GPU OpenGL for the shell and apps: Zink on Turnip, Mesa's Adreno Vulkan driver built with
 # the KGSL backend in /opt/turnip-kgsl. These settings are for KWin on QPainter, which offers no
@@ -128,6 +137,6 @@ run_session dbus-run-session -- labwc --config-dir "$HOME/.config/labwc-plasma" 
     --startup "sh -c 'dbus-update-activation-environment WAYLAND_DISPLAY=wayland-2; $KWIN $SHELL_CMD; labwc --exit'"
 
 echo "== $(date) Plasma Mobile failed to start; falling back to Xfce"
-unset LD_PRELOAD KWIN_COMPOSE XDG_CONFIG_DIRS PLASMA_PLATFORM QT_QUICK_CONTROLS_MOBILE MESA_LOADER_DRIVER_OVERRIDE LIBGL_ALWAYS_SOFTWARE MESA_VK_WSI_DEBUG
+unset LD_PRELOAD KWIN_COMPOSE XDG_CONFIG_DIRS XDG_MENU_PREFIX PLASMA_PLATFORM QT_QUICK_CONTROLS_MOBILE MESA_LOADER_DRIVER_OVERRIDE LIBGL_ALWAYS_SOFTWARE MESA_VK_WSI_DEBUG
 export XDG_CURRENT_DESKTOP=XFCE QT_QUICK_CONTROLS_MOBILE=1
 exec /usr/local/bin/startxfce4-localdesktop
