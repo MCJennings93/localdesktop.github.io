@@ -23,10 +23,13 @@ Firefox on the GPU; Steam in Game Mode (gamescope nested in KWin, Steam Deck UI)
 notification while Steam starts or updates; Bastion (x86, FEX); the emulated Steam Deck controller in
 Steam's UI.
 
-## Next: graphics stacks A/B
-Our GPU stack (KWin GPU compositing, fake KGSL render node, zero-copy import, explicit sync)
-against upstream's #328 (own Mesa build, frame clock, hardware-buffer uploads), in a second
-install ("Local Desktop B", branch `test/graphics-328-b`), before deciding what to keep.
+## Next: merge the graphics stacks (A/B done 2026-10-29)
+Both stacks are installed side by side ("Local Desktop" = ours, "Local Desktop B" = upstream #328
+on Xfce). With the same frame loop they perform the same; ours is required for Plasma Mobile (KWin
+needs a GPU device). Upstream's frame loop helps KWin on the GPU (+40%) and hurts labwc on the CPU
+(-1/3); its AHardwareBuffer upload showed no gain. Next: a hybrid frame loop measured on both
+desktops, and the Xfce GPU fix (branch `fix/xfce-gpu`; labwc on the GPU still stalls on a fence).
+Results and branches: docs/dev-notes.md, last CONSOLIDATED STATE.
 
 ## Steam and Game Mode
 The user picks the order.
