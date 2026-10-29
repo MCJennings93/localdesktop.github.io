@@ -1,5 +1,3 @@
-use std::thread;
-
 use super::build::{PolarBearApp, PolarBearBackend};
 use crate::android::{
     accessibility::{self, AppUserEvent},
@@ -97,15 +95,11 @@ impl ApplicationHandler<AppUserEvent> for PolarBearApp {
                         format!("file:///android_asset/unsupported.html")
                     }
                 };
-                let android_app = self.frontend.android_app.clone();
-                thread::spawn(move || {
-                    run_in_jvm(
-                        move |env, app| {
-                            show_webview_popup(env, app, &url);
-                        },
-                        android_app,
-                    );
-                });
+                // Returns at once: the popup is built on Android's main thread.
+                run_in_jvm(
+                    move |env, app| show_webview_popup(env, app, &url),
+                    self.frontend.android_app.clone(),
+                );
             }
             PolarBearBackend::Wayland(ref mut backend) => {
                 if backend.graphic_renderer.is_none() {
