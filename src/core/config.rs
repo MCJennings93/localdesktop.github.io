@@ -6,10 +6,32 @@ use std::{
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Where the Arch Linux filesystem lives: `arch` in the app's files directory, which Android names
+/// after the package in manifest.yaml, so builds under other package names keep their own. Set
+/// once at startup (see `set_arch_fs_root`). proot's link2symlink records this path in the links
+/// it creates, so it must be the same canonical path at every start.
 #[cfg(not(test))]
-pub const ARCH_FS_ROOT: &str = "/data/data/io.github.localdesktop/files/arch";
+static ARCH_FS_ROOT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Sets [`arch_fs_root`] from Android's files directory (`getFilesDir`, `/data/user/0/<package>/files`,
+/// resolved to its canonical `/data/data/<package>/files`).
+#[cfg(not(test))]
+pub fn set_arch_fs_root(files_dir: &std::path::Path) {
+    let files_dir = fs::canonicalize(files_dir).unwrap_or_else(|_| files_dir.to_path_buf());
+    let _ = ARCH_FS_ROOT.set(files_dir.join("arch").to_string_lossy().into_owned());
+}
+
+#[cfg(not(test))]
+pub fn arch_fs_root() -> &'static str {
+    ARCH_FS_ROOT
+        .get()
+        .expect("arch_fs_root() used before the application context set it")
+}
+
 #[cfg(test)]
-pub const ARCH_FS_ROOT: &str = "/data/local/tmp/arch";
+pub fn arch_fs_root() -> &'static str {
+    "/data/local/tmp/arch"
+}
 
 pub const ARCH_FS_ARCHIVE: &str = "https://github.com/termux/proot-distro/releases/download/v4.29.0/archlinux-aarch64-pd-v4.29.0.tar.xz";
 
