@@ -12,15 +12,22 @@ Where this fork is going, from the working notes in [docs/dev-notes.md](docs/dev
 - Later: a desktop spanning the phone and external displays.
 
 ## Control baseline
-Tag `control-2026-10-29`, APK `ld-20261029-e-agnostic`. Every fix or feature below starts on its
-own branch from it and is compared against it.
+Tag `control-2026-10-29-merged` (package `io.github.localdesktop`, APK `ld-20261029-m1-merged`): our
+work plus upstream's commits up to 0543368 except #328, upstream's own GPU stack. Every fix or
+feature below starts on its own branch from it and is compared against it. (The earlier
+`control-2026-10-29` predates the merge.)
 
 What works there: Plasma Mobile with KWin GPU compositing and zero-copy dmabuf import; Brave and
 Firefox on the GPU; Steam in Game Mode (gamescope nested in KWin, Steam Deck UI), with a progress
 notification while Steam starts or updates; Bastion (x86, FEX); the emulated Steam Deck controller in
 Steam's UI.
 
-## Next: Steam and Game Mode
+## Next: graphics stacks A/B
+Our GPU stack (KWin GPU compositing, fake KGSL render node, zero-copy import, explicit sync)
+against upstream's #328 (own Mesa build, frame clock, hardware-buffer uploads), in a second
+install, before deciding what to keep.
+
+## Steam and Game Mode
 The user picks the order.
 1. **Clicks stopped in one Game Mode instance.** The cursor moved but no button events arrived.
    Seen once. Guess: stale pointer focus after a game changed resolution. Trace recipe in the notes.
@@ -28,15 +35,20 @@ The user picks the order.
    Options: per-game Game Resolution, windowed mode inside gamescope, a newer FNA.
 3. **On-screen gamepad** (off by default). It stops drawing while still taking touches, its STEAM
    button doesn't open Steam's menu or the Quick Access Menu, and touching it flashes the screen.
-4. **Games see Steam Input's virtual pad.** Needs x86-64 libfakeinput in the FEX rootfs, plus evdev
+4. **Physical controllers (tabled).** A controller paired with Android (e.g. a Switch Pro Controller)
+   becomes the Steam Deck controller Steam reads: gamepad events from winit instead of keys and
+   mouse motion, merged into the pad ring.
+5. **Games see Steam Input's virtual pad.** Needs x86-64 libfakeinput in the FEX rootfs, plus evdev
    sysfs.
-5. **Proton ARM64 and Windows games.** DroidDeck's recipes cover this: VKD3D/DXVK defaults, SysV
+6. **Proton ARM64 and Windows games.** DroidDeck's recipes cover this: VKD3D/DXVK defaults, SysV
    IPC shim, tracer hiding, the pressure-vessel probe shim.
-6. Smaller items: "Switch to Desktop" is untested; Steam's menu can't be reached by touch; Plasma
+7. Smaller items: "Switch to Desktop" is untested; Steam's menu can't be reached by touch; Plasma
    Mobile may not show .desktop Actions (Restart Steam); see a real Steam update through the
    progress notification (so far only replays have been run).
 
 ## Backlog
+- **Xfce on a fresh install can't start**: labwc finds the fake KGSL render node, Mesa can't name
+  its driver, and labwc refuses software EGL. Share the session's GPU setup with Xfce.
 - **Green or grayscale video frames in Chromium/Brave.** Worked around with
   `--disable-gpu-memory-buffer-video-frames`; the root cause is open. The notes give two tests:
   memory pressure, and a Chromium trace.
