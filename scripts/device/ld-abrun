@@ -1,13 +1,15 @@
 #!/bin/sh
 # Installs an APK from ~/localdesktop-bench/apks/, restarts Local Desktop, checks that the shell is
 # up, then runs ld-framebench twice under the build's ID. Usage: ld-abrun <build-id>
+# LD_PKG picks the app: app.polarbear (default) or io.github.localdesktop (upstream package name).
+PKG=${LD_PKG:-app.polarbear}
 set -eu
 ID=$1
 S=~/localdesktop-bench/ab-$ID; mkdir -p "$S"
 adb install -r ~/localdesktop-bench/apks/$ID.apk | tail -1
-adb shell am force-stop app.polarbear; sleep 2
-adb shell am start -n app.polarbear/android.app.NativeActivity >/dev/null; sleep 50
-GOT=$(adb shell "run-as app.polarbear cat files/arch/etc/localdesktop/build-id" | tr -d '\r')
+adb shell am force-stop $PKG; sleep 2
+adb shell am start -n $PKG/android.app.NativeActivity >/dev/null; sleep 50
+GOT=$(adb shell "run-as $PKG cat files/arch/etc/localdesktop/build-id" | tr -d '\r')
 echo "build-id on device: $GOT"; [ "$GOT" = "$ID" ] || { echo "WRONG BUILD" >&2; exit 1; }
 adb exec-out screencap -p -d 4630947175568309891 > "$S/shell.png"
 "$(dirname "$0")"/ld-run 'echo "shell threads $(ls /proc/$(pgrep -x plasmashell)/task | wc -l)"' 30

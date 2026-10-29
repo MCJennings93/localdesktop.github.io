@@ -6,13 +6,15 @@
 # BROWSER=firefox uses Firefox with /root/greentest/ff-template (autoplay on, uBlock Origin
 # installed) instead of Brave, for comparison.
 # Usage: ld-videopool <out-dir> <arm-label> <launches> [browser flags]
+# LD_PKG picks the app: app.polarbear (default) or io.github.localdesktop (upstream package name).
+PKG=${LD_PKG:-app.polarbear}
 set -u
 OUT=$1; ARM=$2; N=$3; FLAGS=${4:-}
 mkdir -p "$OUT"
 HERE=$(dirname "$0")
 URL=${URL:-https://www.youtube.com/watch?v=uMhdcq2rqUU}
 for i in $(seq 1 "$N"); do
-    pid_before=$(adb shell pidof app.polarbear | tr -d '\r')
+    pid_before=$(adb shell pidof $PKG | tr -d '\r')
     if [ "${BROWSER:-brave}" = firefox ]; then
         "$HERE"/ld-run "pkill -TERM -f /usr/lib/firefox/firefox; sleep 2; rm -rf /tmp/ffpool; cp -a /root/greentest/ff-template /tmp/ffpool; P=\$(pgrep -x plasmashell); (xargs -0 -a /proc/\$P/environ sh -c 'exec env -i \"\$@\" timeout -s TERM 70 firefox --no-remote --profile /tmp/ffpool $FLAGS $URL' sh > /tmp/greentest-brave.log 2>&1 &); echo started" 30 >/dev/null
         sleep 18
@@ -26,11 +28,11 @@ for i in $(seq 1 "$N"); do
         result=$(SHELL_ENV=1 URL="$URL" KEY=KEYCODE_F "$HERE"/ld-greentest "pool-$ARM-$i" 50 "--start-maximized $FLAGS" 2>&1 |
             grep -o "): [0-9]* green" | grep -o "[0-9]*")
     fi
-    pid_after=$(adb shell pidof app.polarbear | tr -d '\r')
-    focus=$(adb shell dumpsys activity activities | grep -m1 topResumedActivity | grep -c polarbear)
-    build=$(adb shell "run-as app.polarbear cat files/arch/etc/localdesktop/build-id" | tr -d '\r')
+    pid_after=$(adb shell pidof $PKG | tr -d '\r')
+    focus=$(adb shell dumpsys activity activities | grep -m1 topResumedActivity | grep -c "$PKG")
+    build=$(adb shell "run-as $PKG cat files/arch/etc/localdesktop/build-id" | tr -d '\r')
     log="$OUT/brave-$ARM-$i.log"
-    adb exec-out "run-as app.polarbear cat files/arch/tmp/greentest-brave.log" > "$log"
+    adb exec-out "run-as $PKG cat files/arch/tmp/greentest-brave.log" > "$log"
     if [ -z "$result" ] || [ "$pid_before" != "$pid_after" ] || [ "$focus" != 1 ]; then
         state=INVALID
     elif grep -qE 'exited unexpectedly|service crashed|Trace/breakpoint trap|Segmentation fault|Aborted|not safe to map' "$log"; then

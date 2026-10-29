@@ -6,22 +6,24 @@
 # and swap times) and CPU seconds of the app, KWin and plasmashell.
 # Needs the app running with files/frame-stats present (the app reads it at start).
 # Usage: ld-framebench [label]
+# LD_PKG picks the app: app.polarbear (default) or io.github.localdesktop (upstream package name).
+PKG=${LD_PKG:-app.polarbear}
 LABEL=${1:-run}
 OUT=${LD_FRAMEBENCH_DIR:-$HOME/localdesktop-bench}/$LABEL-$(date +%m%d-%H%M%S)
 mkdir -p "$OUT"
 # Which APK this ran on (written by the app from guest/build-overlay.sh).
-adb shell "run-as app.polarbear cat files/arch/etc/localdesktop/build-id" 2>/dev/null | tr -d "\r" > "$OUT/build-id"
+adb shell "run-as $PKG cat files/arch/etc/localdesktop/build-id" 2>/dev/null | tr -d "\r" > "$OUT/build-id"
 echo "build: $(cat "$OUT/build-id")"
 ticks() { adb shell "cat /proc/$1/stat" 2>/dev/null | awk '{print $14+$15}'; }
 pids() {
-    A=$(adb shell pidof app.polarbear | awk '{print $1}' | tr -d '\r')
+    A=$(adb shell pidof $PKG | awk '{print $1}' | tr -d '\r')
     K=$(adb shell pidof kwin_wayland | tr -d '\r')
     P=$(adb shell pidof plasmashell | tr -d '\r')
 }
 sf_summary() {
-    # Our layer is the NativeActivity's child surface: "app.polarbear/android.app.NativeActivity$_<pid>#<id>".
-    awk '
-        /^layerName = app.polarbear\/android.app.NativeActivity\$/ { on = 1; next }
+    # Our layer is the NativeActivity's child surface: "<package>/android.app.NativeActivity$_<pid>#<id>".
+    awk -v layer="layerName = $PKG/android.app.NativeActivity\$" '
+        index($0, layer) == 1 { on = 1; next }
         /^layerName = / { on = 0 }
         on && /^(totalFrames|droppedFrames|jankyFrames|averageFPS) =/ { printf "%s ", $0 }
         on && /present2present histogram/ { getline; p2p = $0 }
@@ -66,10 +68,10 @@ gears() {
     # It runs with plasmashell's environment, as an app started from the drawer would, so it gets
     # the build's real client GPU settings (the runner's own environment is the session script's).
     printf '%s\n' 'xargs -0 -a /proc/$(pgrep -x plasmashell)/environ sh -c '"'"'exec env -i "$@" stdbuf -oL es2gears_wayland'"'"' sh > /tmp/gears-bench.log 2>&1 & sleep 13; pkill -f es2gears_wayland; echo "MESA_VK_WSI_DEBUG=$(tr "\0" "\n" < /proc/$(pgrep -x plasmashell)/environ | sed -n "s/^MESA_VK_WSI_DEBUG=//p")" >> /tmp/gears-bench.log' |
-        adb shell "run-as app.polarbear sh -c 'cat > files/arch/tmp/ld-run/gears-bench.sh'"
+        adb shell "run-as $PKG sh -c 'cat > files/arch/tmp/ld-run/gears-bench.sh'"
     sleep 3; adb shell 'dumpsys SurfaceFlinger --timestats -clear' >/dev/null; adb logcat -c
     sleep 10
-    adb shell "run-as app.polarbear cat files/arch/tmp/gears-bench.log" | grep -E "FPS|MESA_VK_WSI_DEBUG" | tail -3 | sed 's/^/  es2gears: /'
+    adb shell "run-as $PKG cat files/arch/tmp/gears-bench.log" | grep -E "FPS|MESA_VK_WSI_DEBUG" | tail -3 | sed 's/^/  es2gears: /'
     sleep 2
 }
 adb shell input keyevent KEYCODE_WAKEUP

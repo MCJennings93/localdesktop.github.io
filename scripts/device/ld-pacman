@@ -2,6 +2,8 @@
 # Install packages into Local Desktop's Arch proot when the guest has no network under run-as:
 # resolve URLs inside the guest (against its current sync DBs), download on the PC, push into
 # pacman's cache, then install offline. Usage: ld-pacman pkg1 pkg2 ...
+# LD_PKG picks the app: app.polarbear (default) or io.github.localdesktop (upstream package name).
+PKG=${LD_PKG:-app.polarbear}
 set -e
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 ld-exec "pacman -Sp --needed $*" 2>/dev/null | tr -d '\r' | grep -E '^https?://' > "$W/urls" || true
@@ -13,6 +15,6 @@ sed 's/$/.sig/' "$W/urls" | xargs -P6 -n1 curl -sfLO
 cd - >/dev/null
 adb shell rm -rf /data/local/tmp/ld-pkgs; adb shell mkdir -p /data/local/tmp/ld-pkgs
 adb push -q "$W/p/." /data/local/tmp/ld-pkgs/ && adb shell chmod -R a+r /data/local/tmp/ld-pkgs
-adb shell run-as app.polarbear sh -c "'cp /data/local/tmp/ld-pkgs/* files/arch/var/cache/pacman/pkg/'"
+adb shell run-as $PKG sh -c "'cp /data/local/tmp/ld-pkgs/* files/arch/var/cache/pacman/pkg/'"
 adb shell rm -rf /data/local/tmp/ld-pkgs
 ld-exec "stdbuf -oL pacman -S --needed --noconfirm --noprogressbar $* 2>&1; echo EXIT=\$?" 2>&1 | grep -v '^proot'

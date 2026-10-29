@@ -3,15 +3,17 @@
 # the GPU works, unlike ld-exec's run-as), with the session's environment. Needs the runner
 # loop in /usr/local/bin/startplasmamobile-localdesktop and the app in the foreground.
 # Usage: ld-run 'vulkaninfo --summary' [timeout-seconds, default 60]
+# LD_PKG picks the app: app.polarbear (default) or io.github.localdesktop (upstream package name).
+PKG=${LD_PKG:-app.polarbear}
 CMD=$1
 T=${2:-60}
 N=r$$
 D=files/arch/tmp/ld-run
-printf '%s\n' "$CMD" | adb shell "run-as app.polarbear sh -c 'cat > $D/$N.tmp && mv $D/$N.tmp $D/$N.sh'"
+printf '%s\n' "$CMD" | adb shell "run-as $PKG sh -c 'cat > $D/$N.tmp && mv $D/$N.tmp $D/$N.sh'"
 i=0
 while [ $i -lt "$T" ]; do
-    if adb shell "run-as app.polarbear test -f $D/$N.done"; then
-        adb shell "run-as app.polarbear sh -c 'cat $D/$N.log; echo \"[exit \$(cat $D/$N.done)]\"; rm -f $D/$N.log $D/$N.done'"
+    if adb shell "run-as $PKG test -f $D/$N.done"; then
+        adb shell "run-as $PKG sh -c 'cat $D/$N.log; echo \"[exit \$(cat $D/$N.done)]\"; rm -f $D/$N.log $D/$N.done'"
         exit 0
     fi
     sleep 1

@@ -8,11 +8,13 @@
 # screenshots miss. URL= opens another page; PROFILE_SRC= copies another Brave profile (e.g. the
 # user's, /root/.config/BraveSoftware/Brave-Origin-Nightly) instead of the test template. ENV= adds
 # environment variables for Brave (e.g. ENV=ZINK_DEBUG=noreorder).
+# LD_PKG picks the app: app.polarbear (default) or io.github.localdesktop (upstream package name).
+PKG=${LD_PKG:-app.polarbear}
 set -eu
 LABEL=$1; N=${2:-20}; FLAGS=${3:-}
 D=~/localdesktop-bench/shade-$LABEL; rm -rf "$D"; mkdir -p "$D"
 # Which APK this ran on (written by the app from guest/build-overlay.sh).
-adb shell "run-as app.polarbear cat files/arch/etc/localdesktop/build-id" 2>/dev/null | tr -d "\r" > "$D/build-id"
+adb shell "run-as $PKG cat files/arch/etc/localdesktop/build-id" 2>/dev/null | tr -d "\r" > "$D/build-id"
 echo "build: $(cat "$D/build-id")"
 "$(dirname "$0")"/ld-run 'pkill -TERM -f "brave-origin-nightly/brave " ; sleep 2; true' 20 >/dev/null
 ( "$(dirname "$0")"/ld-run "rm -rf /tmp/greentest-profile; cp -a ${PROFILE_SRC:-/root/greentest/profile-template} /tmp/greentest-profile; xargs -0 -a /proc/\$(pgrep -f 'plasmashell -p' | head -1)/environ sh -c 'exec env -i \"\$@\" ${ENV:-} timeout -s TERM $((N * 4 + 40)) brave-origin-nightly --user-data-dir=/tmp/greentest-profile --no-first-run --start-maximized --autoplay-policy=no-user-gesture-required $FLAGS ${URL:-https://www.youtube.com/watch?v=aqz-KE-bpKQ}' sh >/tmp/shadetest-brave.log 2>&1" $((N * 4 + 80)) > "$D/run.txt" 2>&1 & )

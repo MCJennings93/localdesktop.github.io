@@ -4,12 +4,14 @@
 # frame-time percentiles), plus the CPU time the app's processes used meanwhile.
 # BROWSER=firefox|brave plays a YouTube video fullscreen first; BROWSER=none (default) measures the
 # idle desktop. Usage: ld-shadejank <label> [cycles, default 15]
+# LD_PKG picks the app: app.polarbear (default) or io.github.localdesktop (upstream package name).
+PKG=${LD_PKG:-app.polarbear}
 set -u
 LABEL=$1; N=${2:-15}
 D=~/localdesktop-bench/shadejank-$LABEL; rm -rf "$D"; mkdir -p "$D"
 HERE=$(dirname "$0")
 URL=${URL:-https://www.youtube.com/watch?v=uMhdcq2rqUU}
-build=$(adb shell "run-as app.polarbear cat files/arch/etc/localdesktop/build-id" | tr -d '\r')
+build=$(adb shell "run-as $PKG cat files/arch/etc/localdesktop/build-id" | tr -d '\r')
 "$HERE"/ld-run 'pkill -TERM -f /usr/lib/firefox/firefox; pkill -TERM -f "brave-origin-nightly/brave "; sleep 2; true' 20 >/dev/null
 case ${BROWSER:-none} in
 firefox)
@@ -24,7 +26,7 @@ if [ "${BROWSER:-none}" != none ]; then
 fi
 # Total utime+stime (clock ticks) of the app and everything under it.
 app_ticks() {
-    adb shell "run-as app.polarbear sh -c 'for p in /proc/[0-9]*/stat; do cat \$p 2>/dev/null; done'" |
+    adb shell "run-as $PKG sh -c 'for p in /proc/[0-9]*/stat; do cat \$p 2>/dev/null; done'" |
         awk '{ sub(/^.*\) /, ""); t += $12 + $13 } END { print t }'
 }
 adb shell dumpsys gfxinfo com.android.systemui reset >/dev/null
@@ -37,7 +39,7 @@ while [ $i -le "$N" ]; do
 done
 t1=$(app_ticks); s1=$(date +%s.%N)
 adb shell dumpsys gfxinfo com.android.systemui > "$D/gfxinfo.txt"
-adb exec-out "run-as app.polarbear cat files/arch/tmp/shadejank-browser.log" > "$D/browser.log" 2>/dev/null
+adb exec-out "run-as $PKG cat files/arch/tmp/shadejank-browser.log" > "$D/browser.log" 2>/dev/null
 adb logcat -d -e frame-stats | tail -20 > "$D/frame-stats.txt"
 {
     echo "build: $build  browser: ${BROWSER:-none}  cycles: $N"

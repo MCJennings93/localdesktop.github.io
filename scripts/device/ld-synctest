@@ -2,13 +2,15 @@
 # Runs /root/synctest fullscreen in the live session and sums the frame-stats sync counters
 # (mixed = partly drawn frames, stale = old frames shown again). Usage:
 #   ld-synctest <label> [seconds, default 30] [iterations, default 3000] [passes, default 1] [env assignments...]
+# LD_PKG picks the app: app.polarbear (default) or io.github.localdesktop (upstream package name).
+PKG=${LD_PKG:-app.polarbear}
 set -eu
 LABEL=$1; SECS=${2:-30}; ITER=${3:-3000}; PASSES=${4:-1}; shift 4 2>/dev/null || shift $#
 ENVS="$*"
 OUT=~/localdesktop-bench/sync-$LABEL.log
 adb logcat -c
 # Which APK this ran on (written by the app from guest/build-overlay.sh).
-adb shell "run-as app.polarbear cat files/arch/etc/localdesktop/build-id" 2>/dev/null | tr -d "\r" > "$OUT".build-id
+adb shell "run-as $PKG cat files/arch/etc/localdesktop/build-id" 2>/dev/null | tr -d "\r" > "$OUT".build-id
 echo "build: $(cat "$OUT".build-id)"
 adb logcat -v time -e frame-stats > "$OUT" 2>&1 </dev/null &
 LOGCAT=$!

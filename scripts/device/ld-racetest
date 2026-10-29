@@ -6,11 +6,13 @@
 #   gpuload: guest GPU load (/tmp/gpuload, guest/tools/gpuload.c) delays the app's GPU work.
 #   shade:   six Android notification-shade pulls during the recording.
 # Results go to ~/localdesktop-bench/race-<label>/. Needs ffmpeg and python3-numpy on the PC.
+# LD_PKG picks the app: app.polarbear (default) or io.github.localdesktop (upstream package name).
+PKG=${LD_PKG:-app.polarbear}
 set -u
 LABEL=$1; ITER=${2:-50}; EXTRA=${3:-}
 D=~/localdesktop-bench/race-$LABEL; rm -rf "$D"; mkdir -p "$D"
 B=$(dirname "$0")
-adb shell "run-as app.polarbear cat files/arch/etc/localdesktop/build-id" 2>/dev/null | tr -d "\r" > "$D/build-id"
+adb shell "run-as $PKG cat files/arch/etc/localdesktop/build-id" 2>/dev/null | tr -d "\r" > "$D/build-id"
 echo "build: $(cat "$D/build-id")"
 [ "$EXTRA" = gpuload ] && ( "$B"/ld-run '/tmp/gpuload 35 200 10 >/dev/null 2>&1' 60 >/dev/null & )
 ( sleep 8; adb shell screenrecord --time-limit 20 --display-id 4630947175568309891 /data/local/tmp/race.mp4 ) &

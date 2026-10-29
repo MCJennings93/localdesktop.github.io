@@ -4,6 +4,8 @@
 # Needs the APK with the green probe, files/frame-stats present at app start, and the test video
 # in /root/greentest (gray1080.webm + index.html). Results go to ~/localdesktop-bench/green-<label>.log.
 # Usage: ld-greentest <label> [seconds, default 300] [brave flags, default --start-fullscreen]
+# LD_PKG picks the app: app.polarbear (default) or io.github.localdesktop (upstream package name).
+PKG=${LD_PKG:-app.polarbear}
 set -eu
 LABEL=$1
 SECS=${2:-300}
@@ -15,7 +17,7 @@ URL=${URL:-file:///root/greentest/$PAGE}
 OUT=~/localdesktop-bench/green-$LABEL.log
 adb logcat -c
 # Which APK this ran on (written by the app from guest/build-overlay.sh).
-adb shell "run-as app.polarbear cat files/arch/etc/localdesktop/build-id" 2>/dev/null | tr -d "\r" > "$OUT".build-id
+adb shell "run-as $PKG cat files/arch/etc/localdesktop/build-id" 2>/dev/null | tr -d "\r" > "$OUT".build-id
 echo "build: $(cat "$OUT".build-id)"
 # Stream the log during the run: over minutes, the logcat ring buffer would drop early lines.
 adb logcat -v time -e frame-stats > "$OUT" 2>&1 </dev/null &
