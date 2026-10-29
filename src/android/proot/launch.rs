@@ -6,6 +6,8 @@ use std::thread;
 
 static LAUNCH_RUNNING: AtomicBool = AtomicBool::new(false);
 
+const SESSION_LOG: &str = "/tmp/localdesktop-session.log";
+
 struct LaunchRunningGuard;
 
 impl Drop for LaunchRunningGuard {
@@ -43,11 +45,18 @@ pub fn launch() {
         let local_config = get_application_context().local_config;
         let username = local_config.user.username;
 
-        ArchProcess {
-            command: local_config.command.launch,
+        // The session's output goes to a file in the guest, so a session that fails to start can
+        // be diagnosed in any build (release builds don't log at trace level). The subshell keeps
+        // any configured command valid, whatever it ends with.
+        let output = ArchProcess {
+            command: format!("(\n{}\n) >{SESSION_LOG} 2>&1", local_config.command.launch),
             user: Some(username),
             log: Some(Arc::new(|it| log::trace!("{}", it))),
         }
         .run();
+        log::info!(
+            "Desktop session ended ({}); its output is in {SESSION_LOG} in the guest",
+            output.status
+        );
     });
 }
