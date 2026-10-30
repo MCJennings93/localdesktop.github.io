@@ -87,9 +87,9 @@ The backend struct is the compositor's live state — the smithay `Compositor`, 
 
 <!--snippet file=src/android/app/run.rs fn=configure_output-->
 
-### Frame loop — hybrid (since 2026-10-30)
+### Frame loop
 
-A watcher thread wakes the event loop for client requests, and Android's `AChoreographer` vsync clock paces redraws to at most one per display refresh; the loop sleeps when nothing changes. Frame callbacks go out right after a commit when a refresh has passed since the last release, otherwise at the next vsync, so labwc drawing on the CPU keeps its own pace and KWin on the GPU runs at the display's rate. Design, the loops it replaced and the A/B/C test results: [frame-loop.md](frame-loop.md).
+A watcher thread wakes the event loop for client requests, and Android's `AChoreographer` vsync clock paces redraws to at most one per display refresh; the loop sleeps when nothing changes. Frame callbacks go out right after a commit when a refresh has passed since the last release, otherwise at the next vsync, so labwc drawing on the CPU keeps its own pace and KWin on the GPU runs at the display's rate. Design and the test that chose it: [frame-loop.md](frame-loop.md).
 
 ### Scaling — two kinds of client
 

@@ -1127,3 +1127,10 @@ Known: hidden → renderer dropped + no frame callbacks (clients stall); phantom
 
 ## 2026-10-30 ~13:10 — one branch: main
 - fork main and perf/gpu-compositing-pacing were the same commit (14ca74c, 0/0 apart, no open PRs). Deleted perf/gpu-compositing-pacing on the fork and locally; local checkout is now `main`, tracking fork/main. Working branch from now on = main; push only main. (Older sections still say perf/gpu-compositing-pacing: read that as main.)
+
+## 2026-10-30 ~13:30 — names simplified (no more control / hybrid C)
+User: "it doesn't need to remain control hybrid C, that naming convention was for the purpose of the last round of testing."
+- Docs: ROADMAP "Control baseline" → "Current state" (main is the app; short-lived branches merge back); frame-loop.md rewritten: current design first, the A/B/C labels only in the test record; architecture.md heading "Frame loop".
+- Builds now use the repo's default BUILD_ID (dev-<commit>); no named control APKs.
+- Backup of all branches + tags: ~/localdesktop-bench/control/all-branches-20261030.bundle (103 refs, verified).
+- PENDING user permission (blocked by the auto-mode guard): delete tags control-2026-10-29, -merged, -v2, control-2026-10-30-hybrid-c on fork + locally, stable-20261027 locally; delete the 16 local experiment/slot/test branches (all in the bundle). backup/* branches and tags stay.

@@ -11,25 +11,20 @@ Where this fork is going, from the working notes in [docs/dev-notes.md](docs/dev
 - Steam: Valve's ARM64 client, x86 games through FEX, Windows games through Proton ARM64.
 - Later: a desktop spanning the phone and external displays.
 
-## Control baseline
-Tag `control-2026-10-30-hybrid-c` (package `io.github.localdesktop`, APK
-`ld-20261030-a-hybrid-control`): the previous control `control-2026-10-29-v2` plus the hybrid frame
-loop C and the Xfce GPU environment ([docs/frame-loop.md](docs/frame-loop.md)). This is the only APK
-built and the only Local Desktop app installed on the test phone; the A/B test slot
-(`app.polarbear`) is retired. Every fix or feature below starts on its own branch from the tag and
-is compared against it.
+## Current state
+`main` is the app: one build (package `io.github.localdesktop`, "Local Desktop"), up to date with
+upstream plus this fork's work. New work goes on a short-lived branch and merges back into `main`.
 
-What works there: Plasma Mobile with KWin GPU compositing and zero-copy dmabuf import, at ~100 fps
-(the old loop managed ~66); Brave and Firefox on the GPU; Steam in Game Mode (gamescope nested in
-KWin, Steam Deck UI), with a progress notification while Steam starts or updates; Bastion (x86,
-FEX); the emulated Steam Deck controller in Steam's UI.
+What works: Plasma Mobile with KWin GPU compositing and zero-copy dmabuf import, at ~100 fps; Brave
+and Firefox on the GPU; Steam in Game Mode (gamescope nested in KWin, Steam Deck UI), with a
+progress notification while Steam starts or updates; Bastion (x86, FEX); the emulated Steam Deck
+controller in Steam's UI.
 
-## Graphics: stacks merged (A/B/C done 2026-10-30)
-The hybrid loop is as fast as upstream #328's loop on Plasma (101 vs 103 fps) and as fast as our old
-loop on Xfce (38.5 vs 38.7; upstream's loop 25). Upstream's AHardwareBuffer upload (3b) was dropped:
-no gain. Open, in [docs/frame-loop.md](docs/frame-loop.md): Android's shade janks ~1 point more under
-the hybrid; labwc on the GPU still stalls on a fence (Xfce needs `WLR_RENDERER=pixman` for now);
-`ld-framebench` should record the GL renderer.
+## Graphics
+The frame loop is as fast as upstream #328's on Plasma and as fast as our earlier one on Xfce
+([docs/frame-loop.md](docs/frame-loop.md), with the test results). Open: Android's shade janks
+about 1 point more than with the best loop on each desktop; labwc on the GPU still stalls on a
+fence (Xfce needs `WLR_RENDERER=pixman` for now); `ld-framebench` should record the GL renderer.
 
 ## Keep running in the background (added 2026-10-30)
 Goal: when the app is minimized and the phone is used for something else, the session keeps
