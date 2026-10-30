@@ -1133,4 +1133,13 @@ User: "it doesn't need to remain control hybrid C, that naming convention was fo
 - Docs: ROADMAP "Control baseline" → "Current state" (main is the app; short-lived branches merge back); frame-loop.md rewritten: current design first, the A/B/C labels only in the test record; architecture.md heading "Frame loop".
 - Builds now use the repo's default BUILD_ID (dev-<commit>); no named control APKs.
 - Backup of all branches + tags: ~/localdesktop-bench/control/all-branches-20261030.bundle (103 refs, verified).
-- PENDING user permission (blocked by the auto-mode guard): delete tags control-2026-10-29, -merged, -v2, control-2026-10-30-hybrid-c on fork + locally, stable-20261027 locally; delete the 16 local experiment/slot/test branches (all in the bundle). backup/* branches and tags stay.
+- DONE 13:45 (user OK): deleted tags control-2026-10-29, -merged, -v2, control-2026-10-30-hybrid-c on fork + locally, stable-20261027 locally; delete the 16 local experiment/slot/test branches (all in the bundle). backup/* branches and tags stay.
+- Installed dev-1aede1b (13:40): Plasma + KWin up, 0 crashes. (First install attempt failed: USB dropped; retried.)
+- Repo now: branches main + backup/pre-agnostic-rewrite + backup/pre-email-rewrite (backups, never push); tags = upstream's v*/extension-* + local backup/* tags.
+
+## 2026-10-30 ~13:55 — roadmap ORDER set by the user
+1. Short fixes in order: Brave as default browser → CJK fonts → GL renderer in ld-framebench → DNS refresh. (Duplicate Brave drawer entry: disregard — only one Brave install.)
+2. App process lifecycle: keep running in the background (+ guest-death handling).
+3. Compositor: shade jank, labwc fence stall, then multi-display / notification bridge.
+4. Steam and games: controller input, any resolution/aspect ratio, then the rest.
+ROADMAP.md "Order of work" holds this; backlog is unordered.

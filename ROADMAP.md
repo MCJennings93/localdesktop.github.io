@@ -20,16 +20,23 @@ and Firefox on the GPU; Steam in Game Mode (gamescope nested in KWin, Steam Deck
 progress notification while Steam starts or updates; Bastion (x86, FEX); the emulated Steam Deck
 controller in Steam's UI.
 
-## Graphics
-The frame loop is as fast as upstream #328's on Plasma and as fast as our earlier one on Xfce
-([docs/frame-loop.md](docs/frame-loop.md), with the test results). Open: Android's shade janks
-about 1 point more than with the best loop on each desktop; labwc on the GPU still stalls on a
-fence (Xfce needs `WLR_RENDERER=pixman` for now); `ld-framebench` should record the GL renderer.
+## Order of work (set 2026-10-30)
 
-## Keep running in the background (added 2026-10-30)
-Goal: when the app is minimized and the phone is used for something else, the session keeps
-running and nothing closes or crashes. A browser playing a YouTube video keeps playing (audio
-continues); a game keeps running or pauses on its own, and is intact on return.
+### 1. Short fixes, in this order
+1. **Brave as the default browser.** Links opened from the desktop and apps go to Brave Origin
+   Nightly (the XDG default for `http`/`https` and HTML files, in both sessions).
+2. **CJK fonts.** Chinese, Japanese and Korean text shows as boxes: install a Noto CJK font in the
+   guest.
+3. **GL renderer in `ld-framebench`.** Record the renderer es2gears runs on, so a CPU path can't be
+   mistaken for a GPU one (the Xfce figures in [docs/frame-loop.md](docs/frame-loop.md)).
+4. **DNS refresh.** The app writes the guest's `resolv.conf` from Android's DNS only at start; it
+   should follow network changes (Wi-Fi ↔ mobile data, VPN).
+
+### 2. App process lifecycle
+**Keep running in the background.** When the app is minimized and the phone is used for something
+else, the session keeps running and nothing closes or crashes. A browser playing a YouTube video
+keeps playing (audio continues); a game keeps running or pauses on its own, and is intact on
+return.
 
 What is known today:
 - While the app is hidden, the compositor drops its GPU renderer and stops sending frame
@@ -40,51 +47,64 @@ What is known today:
   optimization, and memory pressure.
 - The session only starts while the app is in the foreground.
 
-Likely parts: a foreground service with a notification, so Android keeps the app and its proot
-children alive; frame callbacks (or presentation feedback) that keep pacing while hidden without
-drawing to the window; audio that keeps running; a clean return when the window comes back. To do
-first: a background test (`ld-*` tool) that minimizes the app during a video and a game for N
-minutes, checks that audio keeps playing and that nothing crashes or restarts, and measures what
-happens on return. Related: guest-death handling (backlog).
+Likely parts:
+- a foreground service with a notification, so Android keeps the app and its proot children alive;
+- frame callbacks (or presentation feedback) that keep pacing while hidden, without drawing to the
+  window;
+- audio that keeps running;
+- a clean return when the window comes back.
 
-## Steam and Game Mode
-The user picks the order.
-1. **Clicks stopped in one Game Mode instance.** The cursor moved but no button events arrived.
+First: a background test (`ld-*` tool) that minimizes the app during a video and a game for N
+minutes, checks that audio keeps playing and nothing crashes or restarts, and measures what happens
+on return.
+
+**Guest-death handling**, in the same layer: when Android kills proot, the app notices, cleans up
+the leftover guest processes and says so.
+
+### 3. Compositor
+1. **Shade jank under the frame loop:** about 1 point higher than with the best loop on each
+   desktop ([docs/frame-loop.md](docs/frame-loop.md)).
+2. **labwc stalls on a fence on the GPU** in its first frame, so Xfce on a fresh install needs
+   `WLR_RENDERER=pixman` for now. Fix the stall in the sync layer (`kgsl-syncobj`,
+   `kgsl-drm-shim`).
+3. Later features, both designed in `docs/architecture.md`:
+   - **Multiple displays** (KWin virtual outputs per Android display).
+   - **Two-way notification bridge** (Linux ↔ Android shade).
+
+### 4. Steam and games
+1. **Controller input:**
+   - **Physical controllers.** A controller paired with Android (e.g. a Switch Pro Controller)
+     becomes the Steam Deck controller Steam reads: gamepad events from winit instead of keys and
+     mouse motion, merged into the pad ring.
+   - **Games see Steam Input's virtual pad.** Needs x86-64 libfakeinput in the FEX rootfs, plus
+     evdev sysfs.
+   - **On-screen gamepad** (off by default). It stops drawing while still taking touches, its STEAM
+     button doesn't open Steam's menu or the Quick Access Menu, and touching it flashes the screen.
+2. **Games at any resolution and aspect ratio.** Games that letterbox themselves (Bastion at
+   non-16:9 sizes) misplace touch by their own bars. Options: per-game Game Resolution, windowed
+   mode inside gamescope, a newer FNA.
+3. **Clicks stopped in one Game Mode instance.** The cursor moved but no button events arrived.
    Seen once. Guess: stale pointer focus after a game changed resolution. Trace recipe in the notes.
-2. **Games that letterbox themselves** (Bastion at non-16:9 sizes) misplace touch by their own bars.
-   Options: per-game Game Resolution, windowed mode inside gamescope, a newer FNA.
-3. **On-screen gamepad** (off by default). It stops drawing while still taking touches, its STEAM
-   button doesn't open Steam's menu or the Quick Access Menu, and touching it flashes the screen.
-4. **Physical controllers (tabled).** A controller paired with Android (e.g. a Switch Pro Controller)
-   becomes the Steam Deck controller Steam reads: gamepad events from winit instead of keys and
-   mouse motion, merged into the pad ring.
-5. **Games see Steam Input's virtual pad.** Needs x86-64 libfakeinput in the FEX rootfs, plus evdev
-   sysfs.
-6. **Proton ARM64 and Windows games.** DroidDeck's recipes cover this: VKD3D/DXVK defaults, SysV
+4. **Proton ARM64 and Windows games.** DroidDeck's recipes cover this: VKD3D/DXVK defaults, SysV
    IPC shim, tracer hiding, the pressure-vessel probe shim.
-7. Smaller items: "Switch to Desktop" is untested; Steam's menu can't be reached by touch; Plasma
-   Mobile may not show .desktop Actions (Restart Steam); see a real Steam update through the
-   progress notification (so far only replays have been run).
+5. Smaller items:
+   - "Switch to Desktop" is untested.
+   - Steam's menu can't be reached by touch.
+   - Plasma Mobile may not show .desktop Actions (Restart Steam).
+   - A real Steam update hasn't been seen through the progress notification yet (only replays).
 
-## Backlog
-- **Xfce on a fresh install**: the shared GPU environment (2026-10-30) gets labwc a renderer, but
-  labwc on the GPU stalls on a fence in its first frame. Fix the stall, or default labwc to pixman.
+## Backlog (unordered)
 - **Green or grayscale video frames in Chromium/Brave.** Worked around with
   `--disable-gpu-memory-buffer-video-frames`; the root cause is open. The notes give two tests:
   memory pressure, and a Chromium trace.
-- **Two-way notification bridge** (Linux ↔ Android shade). Designed in `docs/architecture.md`.
-- **Multiple displays** (KWin virtual outputs per Android display). Designed in
-  `docs/architecture.md`.
 - **Zero-copy options 2 and 3** (Turnip inside the app; host-allocated AHardwareBuffers). These
   make it more robust if an Adreno driver update breaks today's metadata trick.
-- **Guest-death handling.** When Android kills proot, the app should notice, clean up the leftover
-  guest processes and say so.
 - From the Droid Deck review: preload shims (`robust`, `usr2`, `writewatch` for Wine, `kgslid`,
   `net`/`netif`, `pulseguard`) and the AAudio sinks if audio problems show up.
-- Small items: Firefox content processes segfault ("Shared memory PlatformHandle is not safe to
-  map"); DNS is read only at app start; CJK fonts are missing; the guest overlay never deletes files
-  dropped from the APK; a duplicate Brave drawer entry; Android's shade janks over the desktop; drop
-  zink-kopper-shim and `LIBGL_ALWAYS_SOFTWARE` once the QPainter path is gone.
+- Small items:
+  - Firefox content processes segfault ("Shared memory PlatformHandle is not safe to map").
+  - The guest overlay never deletes files dropped from the APK.
+  - Drop zink-kopper-shim and `LIBGL_ALWAYS_SOFTWARE` once the QPainter path is gone.
 
 ## Working rules
 - Fix the shared layer instead of adding per-app flags; prove each fix with a test (`~/bin/ld-*`
