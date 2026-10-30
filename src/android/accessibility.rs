@@ -15,8 +15,10 @@ use winit::{
 #[derive(Clone, Copy, Debug)]
 pub enum AppUserEvent {
     AccessibilityInputReady,
-    /// A Wayland client sent something (see `backend::wayland::wake`).
+    /// A Wayland client connected or sent requests.
     WaylandReady,
+    /// The display is about to refresh.
+    Vsync,
 }
 
 #[derive(Clone, Copy, Debug)]

@@ -8,6 +8,9 @@
 # Usage: ld-framebench [label]
 # LD_PKG picks the app: io.github.localdesktop (default) or app.polarbear (builds before the rename).
 PKG=${LD_PKG:-io.github.localdesktop}
+# SHELL_PROC: the session process whose environment launched apps get (plasmashell; xfce4-panel
+# for the Xfce session).
+SHELL_PROC=${SHELL_PROC:-plasmashell}
 LABEL=${1:-run}
 OUT=${LD_FRAMEBENCH_DIR:-$HOME/localdesktop-bench}/$LABEL-$(date +%m%d-%H%M%S)
 mkdir -p "$OUT"
@@ -67,7 +70,7 @@ gears() {
     # es2gears through the session runner (see ld-run): a GL client drawing as fast as KWin lets it.
     # It runs with plasmashell's environment, as an app started from the drawer would, so it gets
     # the build's real client GPU settings (the runner's own environment is the session script's).
-    printf '%s\n' 'xargs -0 -a /proc/$(pgrep -x plasmashell)/environ sh -c '"'"'exec env -i "$@" stdbuf -oL es2gears_wayland'"'"' sh > /tmp/gears-bench.log 2>&1 & sleep 13; pkill -f es2gears_wayland; echo "MESA_VK_WSI_DEBUG=$(tr "\0" "\n" < /proc/$(pgrep -x plasmashell)/environ | sed -n "s/^MESA_VK_WSI_DEBUG=//p")" >> /tmp/gears-bench.log' |
+    printf '%s\n' 'xargs -0 -a /proc/$(pgrep -x '"$SHELL_PROC"')/environ sh -c '"'"'exec env -i "$@" stdbuf -oL es2gears_wayland'"'"' sh > /tmp/gears-bench.log 2>&1 & sleep 13; pkill -f es2gears_wayland; echo "MESA_VK_WSI_DEBUG=$(tr "\0" "\n" < /proc/$(pgrep -x '"$SHELL_PROC"')/environ | sed -n "s/^MESA_VK_WSI_DEBUG=//p")" >> /tmp/gears-bench.log' |
         adb shell "run-as $PKG sh -c 'cat > files/arch/tmp/ld-run/gears-bench.sh'"
     sleep 3; adb shell 'dumpsys SurfaceFlinger --timestats -clear' >/dev/null; adb logcat -c
     sleep 10

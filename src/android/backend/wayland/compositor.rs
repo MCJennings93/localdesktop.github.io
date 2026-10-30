@@ -68,8 +68,6 @@ pub struct Compositor {
     /// Clock and frame counter reported to clients through wp_presentation feedback.
     pub clock: Clock<Monotonic>,
     pub frame_seq: u64,
-    /// Started on the first dispatch, see [`super::wake`].
-    pub waker: Option<super::wake::Waker>,
 }
 
 pub struct State {
@@ -92,8 +90,10 @@ pub struct State {
     /// linux-dmabuf, offered when the device has a KGSL GPU (see [`create_dmabuf_global`]).
     pub dmabuf_state: DmabufState,
     pub dmabuf_global: Option<DmabufGlobal>,
-    /// A client committed since the last redraw, so there may be new content to show.
-    pub needs_redraw: bool,
+    /// A client attached a new buffer since the last render.
+    pub render_pending: bool,
+    /// A client committed since frame callbacks were last released.
+    pub frame_pending: bool,
 }
 
 /// Offer zwp_linux_dmabuf_v1 so nested KWin can composite with OpenGL (Zink on Turnip/KGSL)
@@ -190,7 +190,15 @@ impl CompositorHandler for State {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
-        self.needs_redraw = true;
+        // Frame-callback-only commits (no attach) change nothing on screen.
+        let attached = with_states(surface, |states| {
+            states
+                .cached_state
+                .get::<SurfaceAttributes>()
+                .current()
+                .buffer
+                .is_some()
+        });
         if super::frame_stats::enabled() {
             let new_buffer = with_states(surface, |states| {
                 matches!(
@@ -203,6 +211,8 @@ impl CompositorHandler for State {
             }
         }
         on_commit_buffer_handler::<Self>(surface);
+        self.render_pending |= attached;
+        self.frame_pending = true;
     }
 }
 
@@ -424,7 +434,8 @@ impl Compositor {
             presentation_state: PresentationState::new::<State>(&dh, clock.id() as u32),
             dmabuf_state,
             dmabuf_global,
-            needs_redraw: true,
+            render_pending: false,
+            frame_pending: false,
         };
 
         Ok(Compositor {
@@ -441,7 +452,6 @@ impl Compositor {
             output_global: None,
             clock,
             frame_seq: 0,
-            waker: None,
         })
     }
 }

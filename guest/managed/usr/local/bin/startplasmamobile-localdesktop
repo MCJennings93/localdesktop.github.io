@@ -35,34 +35,20 @@ if [ "$(cat "$MENU_STAMP" 2>/dev/null)" != "$XDG_MENU_PREFIX" ]; then
     kbuildsycoca6 --noincremental && printf '%s\n' "$XDG_MENU_PREFIX" >"$MENU_STAMP"
 fi
 
-# GPU OpenGL for the shell and apps: Zink on Turnip, Mesa's Adreno Vulkan driver built with
-# the KGSL backend in /opt/turnip-kgsl. These settings are for KWin on QPainter, which offers no
-# render device: see /usr/local/src/zink-kopper-shim.c for why LIBGL_ALWAYS_SOFTWARE is set and
-# hidden from Zink, and MESA_VK_WSI_DEBUG=sw copies finished frames into wl_shm buffers. With KWin
-# on OpenGL (the default), kwin-localdesktop-gl drops both, and clients use Mesa's hardware path
-# and present dmabufs (see localdesktop-plasma-mobile-shell). Without Turnip, Qt Quick uses Mesa llvmpipe (CPU). (The app
-# binds a /proc/cpuinfo that keeps llvmpipe's LLVM off SVE, which this SoC has disabled.)
-TURNIP_ICD=/opt/turnip-kgsl/share/vulkan/icd.d/freedreno_icd.aarch64.json
+# GPU OpenGL for the shell and apps: Zink on Turnip through the app's render node, set up by the
+# shared /usr/local/lib/localdesktop-gpu-env.sh (also used by the Xfce session). The extras here are
+# for KWin on QPainter, which offers no render device: see /usr/local/src/zink-kopper-shim.c for why
+# LIBGL_ALWAYS_SOFTWARE is set and hidden from Zink, and MESA_VK_WSI_DEBUG=sw copies finished
+# frames into wl_shm buffers. With KWin on OpenGL (the default), kwin-localdesktop-gl drops both,
+# and clients use Mesa's hardware path and present dmabufs (see localdesktop-plasma-mobile-shell).
+# Without Turnip, Qt Quick uses Mesa llvmpipe (CPU). (The app binds a /proc/cpuinfo that keeps
+# llvmpipe's LLVM off SVE, which this SoC has disabled.)
+. /usr/local/lib/localdesktop-gpu-env.sh
+GPU_PRELOAD=$LOCALDESKTOP_GPU_PRELOAD
 ZINK_SHIM=/usr/local/lib/zink-kopper-shim.so
-GPU_PRELOAD=
-if [ -r "$TURNIP_ICD" ] && [ -r "$ZINK_SHIM" ]; then
-    export VK_ICD_FILENAMES="$TURNIP_ICD" MESA_VK_WSI_DEBUG=sw
-    export MESA_LOADER_DRIVER_OVERRIDE=zink LIBGL_ALWAYS_SOFTWARE=1
-    GPU_PRELOAD=" $ZINK_SHIM"
-    # Every program, not only KWin: Chromium aborts on the fake /dev/dri/renderD0 unless
-    # kgsl-drm-shim answers it, and kgsl-syncobj gives KWin and Chromium explicit sync for the
-    # GPU buffers they exchange (see the sources in /usr/local/src and
-    # /etc/localdesktop/explicit-sync).
-    for shim in kgsl-drm-shim kgsl-syncobj; do
-        [ -r "/usr/local/lib/$shim.so" ] && GPU_PRELOAD="$GPU_PRELOAD /usr/local/lib/$shim.so"
-    done
-    # Chromium's pool for software-decoded video (MappableSharedImageVideoFramePool) sometimes
-    # hands the compositor frames whose chroma is still zero, which show as green flashes, mostly
-    # while an Android overlay (shade, toast, notification) is up; without the pool, frames go
-    # straight to the compositor and none are green (2026-10-27). Brave's launcher passes
-    # BRAVE_FLAGS on (its flags.conf holds --no-sandbox as one argument); /usr/local/bin/chromium
-    # adds the same flag. Unset BRAVE_FLAGS to reproduce the bug.
-    export BRAVE_FLAGS=--disable-gpu-memory-buffer-video-frames
+if [ -n "$GPU_PRELOAD" ] && [ -r "$ZINK_SHIM" ]; then
+    export MESA_VK_WSI_DEBUG=sw LIBGL_ALWAYS_SOFTWARE=1
+    GPU_PRELOAD=" $ZINK_SHIM$GPU_PRELOAD"
 fi
 # KWin composites on the CPU unless kwin-localdesktop-gl takes over below.
 export KWIN_COMPOSE=Q

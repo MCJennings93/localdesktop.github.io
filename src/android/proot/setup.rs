@@ -8,7 +8,8 @@ use crate::{
         },
         utils::application_context::get_application_context,
         utils::ndk::{
-            density_dpi, dns_servers, long_press_timeout_ms, scale_factor, touch_slop_px,
+            density_dpi, dns_servers, long_press_timeout_ms, refresh_rate_millihz, scale_factor,
+            touch_slop_px,
         },
     },
     core::config::{
@@ -932,6 +933,12 @@ export PULSE_SERVER={PULSE_GUEST_SERVER}
 export XDG_RUNTIME_DIR
 # Electron adds --no-sandbox when this is set; Android has no user namespaces for it to use.
 export ELECTRON_DISABLE_SANDBOX=1
+# GPU rendering through the app's render node (see /usr/local/lib/localdesktop-gpu-env.sh): labwc
+# composites on the GPU, as KWin does in the Plasma Mobile session, and apps render on Zink.
+if [ -r /usr/local/lib/localdesktop-gpu-env.sh ]; then
+    . /usr/local/lib/localdesktop-gpu-env.sh
+    export LD_PRELOAD="${{LD_PRELOAD:+$LD_PRELOAD }}${{LOCALDESKTOP_GPU_PRELOAD# }}"
+fi
 exec startxfce4 --wayland "$@"
 "#
         ),
@@ -1533,6 +1540,7 @@ pub fn setup(android_app: AndroidApp) -> PolarBearBackend {
             clock: Clock::new(),
             key_counter: 0,
             guest_scale_factor: scale_factor(&android_app),
+            refresh_millihz: refresh_rate_millihz(&android_app),
             touch_points: std::collections::HashMap::new(),
             scroll_centroid: None,
             touch_mode: TouchMode::Undecided,
@@ -1543,6 +1551,10 @@ pub fn setup(android_app: AndroidApp) -> PolarBearBackend {
             pointer_pressed: false,
             native_touch: get_application_context().local_config.input.native_touch,
             gamepad: crate::android::backend::wayland::Gamepad::new(),
+            watcher: None,
+            frame_clock: None,
+            rendered_since_vsync: false,
+            callbacks_released_at: None,
             android_app,
         })
     } else {

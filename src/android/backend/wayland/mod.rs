@@ -2,20 +2,23 @@ pub mod bind;
 mod compositor;
 mod event_centralizer;
 mod event_handler;
+mod frame_clock;
 mod frame_stats;
 mod gamepad;
-mod wake;
 mod input;
 mod keymap;
 mod output_state;
+mod watcher;
 mod winit_backend;
 
 pub use output_state::write_guest_output_state;
 
 pub use compositor::{Compositor, State};
 pub use event_centralizer::{centralize, centralize_injected_keyboard, CentralizedEvent};
-pub use event_handler::{dispatch_clients, flush_clients, handle};
+pub use event_handler::{dispatch_clients, handle, idle, on_vsync, start_frame_loop};
+pub use frame_clock::FrameClock;
 pub use gamepad::Gamepad;
+pub use watcher::WaylandWatcher;
 pub use winit_backend::{bind, WinitGraphicsBackend};
 
 use smithay::{
@@ -46,6 +49,8 @@ pub struct WaylandBackend {
     pub clock: Clock<Monotonic>,
     pub key_counter: u32,
     pub guest_scale_factor: f64,
+    /// Display refresh rate, as advertised in the `wl_output` mode.
+    pub refresh_millihz: i32,
     /// Active touch points keyed by pointer id.
     pub touch_points: HashMap<u64, PhysicalPosition<f64>>,
     /// Centroid of the active touch points at the last scroll update.
@@ -66,6 +71,14 @@ pub struct WaylandBackend {
     pub native_touch: bool,
     /// The on-screen gamepad shown in Game Mode, which takes the touches on its controls.
     pub gamepad: Gamepad,
+    /// Wakes the event loop for client requests; started on the first resume.
+    pub watcher: Option<WaylandWatcher>,
+    /// Vsync source; created on the first resume, on the thread that owns the looper.
+    pub frame_clock: Option<FrameClock>,
+    /// A frame was already submitted for the upcoming refresh, so the next one waits for vsync.
+    pub rendered_since_vsync: bool,
+    /// When frame callbacks last went out (see `release_frame_callbacks`).
+    pub callbacks_released_at: Option<std::time::Instant>,
 }
 
 impl WaylandBackend {
