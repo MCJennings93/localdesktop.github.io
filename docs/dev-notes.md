@@ -997,7 +997,7 @@ Branch perf/gpu-compositing-pacing, tree clean at **45a2dff**, not pushed. Insta
 ### Next (user decides)
 **CONTROL + REPOS (2026-10-29 ~09:20; the user's decisions):**
 - Control baseline: tag `control-2026-10-29` = the commit "docs: control build ld-20261029-e-agnostic" on perf/gpu-compositing-pacing, with APK **ld-20261029-e-agnostic** (~/localdesktop-bench/apks/ and ~/localdesktop-bench/control/). Every further fix or feature starts on a new branch from this tag and is compared against it. Restore: `adb install -r ~/localdesktop-bench/control/ld-20261029-e-agnostic.apk`.
-- Remotes: `fork` = the user's **public** fork github.com/MCJennings93/localdesktop.github.io (primary; the branch tracks it; the fork's default branch is still `main`). `mine` = private mirror github.com/MCJennings93/localdesktop-private. `origin` = upstream, read-only. Push only when asked.
+- Remotes: `fork` = the user's **public** fork github.com/MCJennings93/localdesktop.github.io (primary; the branch tracks it; the fork's default branch is still `main`). (The private mirror `mine`, localdesktop-private, was retired on 2026-10-30.) `origin` = upstream, read-only. Push only when asked.
 - Published history was rewritten twice (from e6a8b58, 38 commits): (1) author/committer email → 203696549+MCJennings93@users.noreply.github.com (repo-local user.email set to it); (2) **device-agnostic wording**: the user said the project isn't specific to the test phone, it's for any Android device. So no model names in published files, notes or commit messages ("the test phone", "a near-square foldable screen"); the notes copy is docs/dev-notes.md, with the adb serial replaced by <adb-serial>. Old histories are kept locally only in branches backup/pre-email-rewrite and backup/pre-agnostic-rewrite (plus backup/* tags). Never push those.
 
 ## 2026-10-29 ~09:45 — upstream merge test (branch test/upstream-except-328, local only)
@@ -1114,3 +1114,7 @@ User: "Hybrid C ... will be the new control. It should be the only APK built mov
 - Fresh-install Xfce default after the merge: labwc on the GPU (stalls on a fence) → needs WLR_RENDERER=pixman until fixed. Plasma (the phone's config) unaffected.
 - ~/bin/ld-framebench + ld-shadejank point back at ~/localdesktop/scripts/device (main now has SHELL_PROC); the tools-xfce-gpu worktree is removed.
 Next (user decides): C's shade jank (+~1 pt), labwc GPU fence stall, renderer in ld-framebench; Steam/Game Mode list in ROADMAP.
+
+## 2026-10-30 ~12:40 — NEW PROJECT: keep running in the background (added to ROADMAP)
+User: "Programs should continue to function if I minimize the app and use my phone for something else. A Browser playing a YouTube video should keep playing, a game should still be running (maybe paused?), but it shouldn't just close/crash."
+Known: hidden → renderer dropped + no frame callbacks (clients stall); phantom process killer / battery optimization / memory pressure can kill proot children; session only starts in the foreground. Plan sketch in ROADMAP "Keep running in the background": foreground service, pacing while hidden, audio, clean resume; first build a background test tool. Not started; the user picks when.

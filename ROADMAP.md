@@ -31,6 +31,27 @@ no gain. Open, in [docs/frame-loop.md](docs/frame-loop.md): Android's shade jank
 the hybrid; labwc on the GPU still stalls on a fence (Xfce needs `WLR_RENDERER=pixman` for now);
 `ld-framebench` should record the GL renderer.
 
+## Keep running in the background (added 2026-10-30)
+Goal: when the app is minimized and the phone is used for something else, the session keeps
+running and nothing closes or crashes. A browser playing a YouTube video keeps playing (audio
+continues); a game keeps running or pauses on its own, and is intact on return.
+
+What is known today:
+- While the app is hidden, the compositor drops its GPU renderer and stops sending frame
+  callbacks, so clients stop drawing until the app is visible again (`schedule_frame` in
+  `event_handler.rs`). Video and games may stall on that rather than keep going.
+- Android can kill or throttle the app's processes in the background: the phantom process killer
+  (seen 2026-10-27; the test phone has "Disable child process restrictions" on), battery
+  optimization, and memory pressure.
+- The session only starts while the app is in the foreground.
+
+Likely parts: a foreground service with a notification, so Android keeps the app and its proot
+children alive; frame callbacks (or presentation feedback) that keep pacing while hidden without
+drawing to the window; audio that keeps running; a clean return when the window comes back. To do
+first: a background test (`ld-*` tool) that minimizes the app during a video and a game for N
+minutes, checks that audio keeps playing and that nothing crashes or restarts, and measures what
+happens on return. Related: guest-death handling (backlog).
+
 ## Steam and Game Mode
 The user picks the order.
 1. **Clicks stopped in one Game Mode instance.** The cursor moved but no button events arrived.

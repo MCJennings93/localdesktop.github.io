@@ -2,6 +2,10 @@
 
 Local Desktop helps you run a desktop Linux environment on your Android device.
 
+> **This fork** adds Plasma Mobile on the GPU (Turnip on KGSL, Zink, zero-copy buffers), a hybrid
+> frame loop, and Steam with FEX in a Game Mode session. Current goals and open work:
+> [ROADMAP.md](ROADMAP.md). Frame loop design and test results: [docs/frame-loop.md](docs/frame-loop.md).
+
 **Note**: It is expected that you already have a usable desktop experience, i.e., a large enough display (tablet or DEX), a physical keyboard, and optionally a mouse/trackpad. **Local Desktop aims to bridge the gap between the two platforms, not trying to "simulate" the desktop experience by introducing inconvenient interactions**.
 
 ## How it works
