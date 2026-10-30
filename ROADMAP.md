@@ -2,7 +2,7 @@
 
 Where this fork is going, from the working notes in [docs/dev-notes.md](docs/dev-notes.md)
 (dated session log; its last "CONSOLIDATED STATE" section is the current state). Design docs:
-[architecture](docs/architecture.md), [Game Mode](docs/game-mode.md),
+[architecture](docs/architecture.md), [frame loop](docs/frame-loop.md), [Game Mode](docs/game-mode.md),
 [Steam Deck controller](docs/steam-deck-controller.md).
 
 ## Goals
@@ -12,24 +12,24 @@ Where this fork is going, from the working notes in [docs/dev-notes.md](docs/dev
 - Later: a desktop spanning the phone and external displays.
 
 ## Control baseline
-Tag `control-2026-10-29-v2` (package `io.github.localdesktop`, APK `ld-20261029-m2-relative-paths`):
-our work plus upstream's commits up to 0543368 except #328, upstream's own GPU stack. Paths follow the
-package name, so test copies can be installed under other names. Every fix or
-feature below starts on its own branch from it and is compared against it. (The earlier
-`control-2026-10-29` predates the merge.)
+Tag `control-2026-10-30-hybrid-c` (package `io.github.localdesktop`, APK
+`ld-20261030-a-hybrid-control`): the previous control `control-2026-10-29-v2` plus the hybrid frame
+loop C and the Xfce GPU environment ([docs/frame-loop.md](docs/frame-loop.md)). This is the only APK
+built and the only Local Desktop app installed on the test phone; the A/B test slot
+(`app.polarbear`) is retired. Every fix or feature below starts on its own branch from the tag and
+is compared against it.
 
-What works there: Plasma Mobile with KWin GPU compositing and zero-copy dmabuf import; Brave and
-Firefox on the GPU; Steam in Game Mode (gamescope nested in KWin, Steam Deck UI), with a progress
-notification while Steam starts or updates; Bastion (x86, FEX); the emulated Steam Deck controller in
-Steam's UI.
+What works there: Plasma Mobile with KWin GPU compositing and zero-copy dmabuf import, at ~100 fps
+(the old loop managed ~66); Brave and Firefox on the GPU; Steam in Game Mode (gamescope nested in
+KWin, Steam Deck UI), with a progress notification while Steam starts or updates; Bastion (x86,
+FEX); the emulated Steam Deck controller in Steam's UI.
 
-## Next: merge the graphics stacks (A/B done 2026-10-29)
-Both stacks are installed side by side ("Local Desktop" = ours, "Local Desktop B" = upstream #328
-on Xfce). With the same frame loop they perform the same; ours is required for Plasma Mobile (KWin
-needs a GPU device). Upstream's frame loop helps KWin on the GPU (+40%) and hurts labwc on the CPU
-(-1/3); its AHardwareBuffer upload showed no gain. Next: a hybrid frame loop measured on both
-desktops, and the Xfce GPU fix (branch `fix/xfce-gpu`; labwc on the GPU still stalls on a fence).
-Results and branches: docs/dev-notes.md, last CONSOLIDATED STATE.
+## Graphics: stacks merged (A/B/C done 2026-10-30)
+The hybrid loop is as fast as upstream #328's loop on Plasma (101 vs 103 fps) and as fast as our old
+loop on Xfce (38.5 vs 38.7; upstream's loop 25). Upstream's AHardwareBuffer upload (3b) was dropped:
+no gain. Open, in [docs/frame-loop.md](docs/frame-loop.md): Android's shade janks ~1 point more under
+the hybrid; labwc on the GPU still stalls on a fence (Xfce needs `WLR_RENDERER=pixman` for now);
+`ld-framebench` should record the GL renderer.
 
 ## Steam and Game Mode
 The user picks the order.
@@ -51,8 +51,8 @@ The user picks the order.
    progress notification (so far only replays have been run).
 
 ## Backlog
-- **Xfce on a fresh install can't start**: labwc finds the fake KGSL render node, Mesa can't name
-  its driver, and labwc refuses software EGL. Share the session's GPU setup with Xfce.
+- **Xfce on a fresh install**: the shared GPU environment (2026-10-30) gets labwc a renderer, but
+  labwc on the GPU stalls on a fence in its first frame. Fix the stall, or default labwc to pixman.
 - **Green or grayscale video frames in Chromium/Brave.** Worked around with
   `--disable-gpu-memory-buffer-video-frames`; the root cause is open. The notes give two tests:
   memory pressure, and a Chromium trace.

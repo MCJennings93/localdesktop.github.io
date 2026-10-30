@@ -1083,3 +1083,34 @@ Conclusions: the stacks perform the same with the same frame loop; upstream's lo
 - ~18:25 STOPPED for the session (user). The full run had a bug: `echo "$CONFIGS" | while read` loop — adb/scripts inside read stdin and ate the config list, so each round ran only A-plasma. FIXED in run-abc.sh (every command < /dev/null), not yet re-run. Only result: A-plasma r1 (abc-A-trace): SF 69.2 fps, ≥12 ms 433/723, app 58.4 fps, Brave+shade jank 17.8%, CPU 115%, cold 7.1/6.9/6.8 s, cb: 671 redraw releases, wait 0.2 ms, produce 15.7 ms (KWin takes ~16 ms after release → the ~60-70 fps ceiling of our loop on Plasma).
 - Phone left clean: stay_on_while_plugged_in restored to 0; "Local Desktop B" restored to upstream #328 (b3) + Xfce (restore-b.sh); "Local Desktop" control untouched (v2).
 - NEXT SESSION: `~/localdesktop-bench/abc-next/run-abc.sh 3` (~90 min, phone plugged in, untouched; it sets/restores stay-awake only if wrapped as on 10-29: run `adb shell svc power stayon usb` before and restore `settings put global stay_on_while_plugged_in <abc-next/stay_on.orig>` after), then decide on merging the stacks.
+- ~18:27 OVERNIGHT REAL-WORLD TEST (user): "Local Desktop C" = hybrid C installed in the test slot app.polarbear (APK ld-20261029-C-overnight = exp/hybrid-c + slot commit with label "Local Desktop C", branch slot/abc-C), Plasma config (/root/toml-plasma), verified: KWin OpenGL ES on Zink/Turnip, 0 crashes. frame-stats switch is on in this slot (files/frame-stats; cb[...] lines in logcat). Control "Local Desktop" untouched. Upstream B is NOT on the phone now; `abc-next/restore-b.sh` puts it back. Next session first: `adb logcat -d -b crash`, the app's /tmp/plasma-mobile-session.log + /tmp/localdesktop-session.log in the slot, and the user's impressions.
+
+## 2026-10-30 ~11:45 — A/B/C RESULTS (full run done) — read this first
+User ran "Local Desktop C" (hybrid) overnight by hand: "seems to run well". Overnight check: 0 app crashes (only a ChatGPT crash at 05:17), Plasma log only the usual QuickSettings.qml TypeErrors; logs in ~/localdesktop-bench/C-overnight-20261030/.
+
+Runs: abc-next/results-20261030-0843 (3 rounds × 7 configs) + results-xfce-20261030-1111 (Xfce rounds 1–2 re-run). 29 runs, 0 crashes.
+- BUG found + fixed: ~/bin/ld-framebench and ld-shadejank pointed at the main checkout (control branch, no SHELL_PROC) → on Xfce, es2gears/Brave never launched (rounds 1–2 Xfce of the main run invalid: no fps, CPU 7%). Now ~/bin/ld-framebench + ld-shadejank → worktree ~/localdesktop-bench/tools-xfce-gpu (fix/xfce-gpu, detached; same behaviour on Plasma). Main checkout untouched. Script for Xfce-only runs: abc-next/run-abc-xfce.sh.
+- Every adb install now needs an on-phone Play Protect confirmation (user approves; runs wait). Google MFA prompts at 11:08 and 11:23 hit cold starts only (B-xfce-r3 start 2, C-xfce-r1 start 1: excluded); no benchmark phase was interrupted.
+
+| 3 rounds avg | Plasma SF fps | Plasma gears | Plasma Brave jank | Plasma CPU | Xfce SF fps | Xfce Brave jank | Xfce CPU |
+|---|---|---|---|---|---|---|---|
+| A control loop | 66.1 (57/69/73) | 61.6 | 14.1% | 134% | 38.7 | 12.9% | 152% |
+| 3a upstream loop | 103.0 (105/106/98) | 111.2 | 13.6% | 147% | 25.4 | 13.5% | 174% |
+| C hybrid | 101.0 (93/103/107) | 113.0 | 14.3% | 152% | 38.5 | 14.4% | 162% |
+| B upstream #328 | (no Plasma) | | | | 24.8 | 14.3% | 163% |
+Cold starts: Plasma ~7 s all, Xfce ~5 s all (no difference). CPU numbers are noisy (±20 points within a config).
+Conclusions: C = 3a on Plasma (≈1.5× A) AND = A on Xfce (3a/B lose a third). On Xfce C releases on commit only (cb 0/0/452, like A); on Plasma mixed vsync/commit. Only cost seen: Brave+shade jank in C is ~0.7–1.5 points higher than the best loop on each desktop, in every round (small but consistent). → C is the leader; the jank gap is the one thing to look at before merging.
+Phone: "Local Desktop B" = upstream #328 + Xfce (as on 10-29 evening); control "Local Desktop" untouched; stay_on restored to 0. C is no longer installed (APK ld-20261029-C-overnight, branch slot/abc-C, to put it back).
+Next (user decides): merge C into the stack? look at C's jank first? merge fix/xfce-gpu? drop 3b?
+
+## 2026-10-30 ~12:15 — HYBRID C IS THE NEW CONTROL (merged, single APK) — read this first
+User: "Hybrid C ... will be the new control. It should be the only APK built moving forward, the only variant of these apps installed on the phone, and GitHub needs to be updated."
+- Merged exp/hybrid-c into perf/gpu-compositing-pacing (merge a63ec7f, no-ff). Code identical to the tested C build (slot/abc-C differed only in manifest package/label). Brings 3a (496f074), hybrid (98a8303), frame-callback trace (3c86924) and fix/xfce-gpu (6cecc39, a9e9ad5, 19a30ff, 85a427b). 3b NOT merged (no gain).
+- Design + full A/B/C results: docs/frame-loop.md (new); short section in docs/architecture.md; ROADMAP.md control + graphics sections updated.
+- APK **ld-20261030-a-hybrid-control** (io.github.localdesktop, "Local Desktop"), in ~/localdesktop-bench/apks/ and control/. Installed over the old control with `adb install -r` (data + Steam kept). Verified 12:01: Plasma up, KWin up, build-id matches, ld-framebench SF 104 fps, es2gears 114–119, cb mixed vsync/commit, 0 crashes. frame-stats switch left OFF.
+- Test slot app.polarbear UNINSTALLED (26 GB, a 10-29 copy of the control rootfs). Its unique files (toml-plasma, toml-xfce-ours, toml-xfce-up, ld-runner.sh) saved in ~/localdesktop-bench/abc-next/b-slot-files/. Phone now has only io.github.localdesktop.
+- Tag **control-2026-10-30-hybrid-c**. Experiment branches stay local (bundle in ~/localdesktop-bench/control/).
+- Caveat found while documenting: the Xfce "ours" test config ran apps with LIBGL_ALWAYS_SOFTWARE=1 MESA_VK_WSI_DEBUG=sw (+ labwc pixman), so es2gears on Xfce was probably on llvmpipe — the Xfce fps are a CPU-path ceiling (same for all loops, so the comparison holds). ld-framebench doesn't record the renderer: open item.
+- Fresh-install Xfce default after the merge: labwc on the GPU (stalls on a fence) → needs WLR_RENDERER=pixman until fixed. Plasma (the phone's config) unaffected.
+- ~/bin/ld-framebench + ld-shadejank point back at ~/localdesktop/scripts/device (main now has SHELL_PROC); the tools-xfce-gpu worktree is removed.
+Next (user decides): C's shade jank (+~1 pt), labwc GPU fence stall, renderer in ld-framebench; Steam/Game Mode list in ROADMAP.
