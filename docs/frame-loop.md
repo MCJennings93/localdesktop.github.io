@@ -49,7 +49,7 @@ import, presentation feedback and frame stats.
 ## One app, one APK
 
 From now on there is a single build: package `io.github.localdesktop`, label "Local Desktop",
-built from the main branch (`perf/gpu-compositing-pacing`). It is the only Local Desktop app
+built from `main`. It is the only Local Desktop app
 installed on the test phone. The A/B/C test slot (`app.polarbear`, "Local Desktop B"/"C") is
 retired: it was a one-commit relabel on top of each experiment branch, and it has been uninstalled.
 

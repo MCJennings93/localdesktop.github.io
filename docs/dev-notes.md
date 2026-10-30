@@ -1118,3 +1118,12 @@ Next (user decides): C's shade jank (+~1 pt), labwc GPU fence stall, renderer in
 ## 2026-10-30 ~12:40 — NEW PROJECT: keep running in the background (added to ROADMAP)
 User: "Programs should continue to function if I minimize the app and use my phone for something else. A Browser playing a YouTube video should keep playing, a game should still be running (maybe paused?), but it shouldn't just close/crash."
 Known: hidden → renderer dropped + no frame callbacks (clients stall); phantom process killer / battery optimization / memory pressure can kill proot children; session only starts in the foreground. Plan sketch in ROADMAP "Keep running in the background": foreground service, pacing while hidden, audio, clean resume; first build a background test tool. Not started; the user picks when.
+
+## 2026-10-30 ~13:00 — GitHub: fork main = our work, 0 behind upstream
+- User: fork should look "totally up to date with the commits on the main thread, plus the improvements made through the hybrid", with the current goals as a roadmap.
+- 20acb22: ROADMAP "Keep running in the background" + README note linking ROADMAP.md and docs/frame-loop.md. 14ca74c: `git merge -s ours origin/main` (0543368) — tree unchanged (= tested control code), history now contains all upstream commits (the 9 after #328 were already cherry-picked; #328 superseded).
+- Pushed 14ca74c to fork main (fast-forward from 0543368) and fork perf/gpu-compositing-pacing. GitHub compare upstream main...fork main: behind_by=0 ahead_by=75. The repo isn't registered as a GitHub fork (no parent), so GitHub shows no ahead/behind banner on its own.
+- From now on push to fork BOTH main and perf/gpu-compositing-pacing (they are the same commit).
+
+## 2026-10-30 ~13:10 — one branch: main
+- fork main and perf/gpu-compositing-pacing were the same commit (14ca74c, 0/0 apart, no open PRs). Deleted perf/gpu-compositing-pacing on the fork and locally; local checkout is now `main`, tracking fork/main. Working branch from now on = main; push only main. (Older sections still say perf/gpu-compositing-pacing: read that as main.)
