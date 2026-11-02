@@ -1143,3 +1143,11 @@ User: "it doesn't need to remain control hybrid C, that naming convention was fo
 3. Compositor: shade jank, labwc fence stall, then multi-display / notification bridge.
 4. Steam and games: controller input, any resolution/aspect ratio, then the rest.
 ROADMAP.md "Order of work" holds this; backlog is unordered.
+
+## 2026-11-02 ~10:45 — Short fix 1: Brave as the default browser (tested, NOT committed)
+- Before: Plasma reached Brave only because `brave-origin-nightly.desktop` sorts first in mimeinfo.cache (no default was set anywhere); Xfce's xdg-open goes through xfce4-mime-helper and helpers.rc (WebBrowser=firefox), so links opened Firefox.
+- Changes: guest/managed/etc/xdg/mimeapps.list (http, https, text/html, xhtml: Brave then Firefox; ~/.config/mimeapps.list still wins, no merging needed); guest/managed/usr/local/share/xfce4/helpers/brave-origin-nightly.desktop; localdesktop-xfce-session-init writes ~/.config/xfce4/helpers.rc if missing and Brave is installed; "Online Docs" desktop item uses xdg-open instead of firefox (new installs only, it is create-if-missing).
+- Test: ~/bin/ld-browsertest, PASS on APK dev-68e7e86 (built from the uncommitted tree; copy in ~/localdesktop-bench/apks/dev-68e7e86-brave-default.apk). Links reach Brave as KDE and as XFCE, user choice wins, Firefox if Brave is absent. Before the fix the same test sent XFCE to Firefox. It opens tabs in Brave.
+- Not tested: a real Xfce session. The XFCE case runs in the Plasma session with XDG_CURRENT_DESKTOP=XFCE, and the init step runs alone against a throwaway config.
+- Phantom process killer killed the session at 10:32:54 and 10:35:43 ("Trimming phantom processes", cap 32) with Brave + Firefox open: "Disable child process restrictions" was off, unknown why (on since 10-27). User turned it on again. Its value is `getprop persist.sys.fflag.override.settings_enable_monitor_phantom_procs` (now false = restrictions off); `settings get global` stays null, so don't read that one. Guest-death handling (ROADMAP 2) would have helped: the app stayed up with a dead session.
+- Next in the order: CJK fonts.

@@ -18,18 +18,16 @@ upstream plus this fork's work. New work goes on a short-lived branch and merges
 What works: Plasma Mobile with KWin GPU compositing and zero-copy dmabuf import, at ~100 fps; Brave
 and Firefox on the GPU; Steam in Game Mode (gamescope nested in KWin, Steam Deck UI), with a
 progress notification while Steam starts or updates; Bastion (x86, FEX); the emulated Steam Deck
-controller in Steam's UI.
+controller in Steam's UI; Brave as the default browser (Firefox if Brave isn't installed).
 
 ## Order of work (set 2026-10-30)
 
 ### 1. Short fixes, in this order
-1. **Brave as the default browser.** Links opened from the desktop and apps go to Brave Origin
-   Nightly (the XDG default for `http`/`https` and HTML files, in both sessions).
-2. **CJK fonts.** Chinese, Japanese and Korean text shows as boxes: install a Noto CJK font in the
+1. **CJK fonts.** Chinese, Japanese and Korean text shows as boxes: install a Noto CJK font in the
    guest.
-3. **GL renderer in `ld-framebench`.** Record the renderer es2gears runs on, so a CPU path can't be
+2. **GL renderer in `ld-framebench`.** Record the renderer es2gears runs on, so a CPU path can't be
    mistaken for a GPU one (the Xfce figures in [docs/frame-loop.md](docs/frame-loop.md)).
-4. **DNS refresh.** The app writes the guest's `resolv.conf` from Android's DNS only at start; it
+3. **DNS refresh.** The app writes the guest's `resolv.conf` from Android's DNS only at start; it
    should follow network changes (Wi-Fi ↔ mobile data, VPN).
 
 ### 2. App process lifecycle

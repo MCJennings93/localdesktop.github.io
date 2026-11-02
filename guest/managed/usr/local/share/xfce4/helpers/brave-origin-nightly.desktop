@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Icon=brave-origin-nightly
+Type=X-XFCE-Helper
+Name=Brave Origin (nightly)
+StartupNotify=true
+X-XFCE-Binaries=brave-origin-nightly;
+X-XFCE-Category=WebBrowser
+X-XFCE-Commands=%B;
+X-XFCE-CommandsWithParameter=%B "%s";

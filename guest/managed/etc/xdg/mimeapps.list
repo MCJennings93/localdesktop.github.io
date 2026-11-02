@@ -1,0 +1,7 @@
+# System-wide default apps (XDG MIME Applications spec). A choice in ~/.config/mimeapps.list wins
+# over this file, and each list falls through to its next app if the first isn't installed.
+[Default Applications]
+x-scheme-handler/http=brave-origin-nightly.desktop;firefox.desktop;
+x-scheme-handler/https=brave-origin-nightly.desktop;firefox.desktop;
+text/html=brave-origin-nightly.desktop;firefox.desktop;
+application/xhtml+xml=brave-origin-nightly.desktop;firefox.desktop;

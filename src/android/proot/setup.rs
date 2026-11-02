@@ -963,6 +963,14 @@ xfconf-query -c xsettings -p /Xft/DPI -t int -s {xft_dpi}
 xfconf-query -c xfce4-panel -p /panels/panel-2/autohide-behavior -s 0 2>/dev/null
 
 /usr/local/bin/localdesktop-no-sandbox-entries
+
+# Xfce opens links through its own preferred browser, not mimeapps.list, and ships Firefox as the
+# default. Brave may be installed later, so check each session; an existing file is the user's choice.
+helpers="${{XDG_CONFIG_HOME:-$HOME/.config}}/xfce4/helpers.rc"
+if [ ! -e "$helpers" ] && command -v brave-origin-nightly >/dev/null; then
+    mkdir -p "$(dirname "$helpers")"
+    echo WebBrowser=brave-origin-nightly > "$helpers"
+fi
 "#
         ),
     );
@@ -1019,8 +1027,8 @@ Version=1.0
 Type=Application
 Name=Local Desktop - Online Docs
 Comment=Open the Local Desktop documentation website
-Exec=firefox {DOCS_HOME_URL}
-Icon=firefox
+Exec=xdg-open {DOCS_HOME_URL}
+Icon=help-browser
 Terminal=false
 StartupNotify=true
 "#
