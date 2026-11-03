@@ -6,10 +6,15 @@ use std::io::{BufRead, BufReader, Read};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
-use std::sync::{Arc, OnceLock};
+use std::sync::{mpsc, Arc, OnceLock};
+use std::thread;
+use std::time::Duration;
 use winit::platform::android::activity::AndroidApp;
 
 pub type Log = Arc<dyn Fn(String) + Send + Sync>;
+
+/// How long to keep reading output after a command has ended.
+const OUTPUT_GRACE: Duration = Duration::from_secs(2);
 
 const SUPPORT_CHECK_BINARY: &str = "ld-linux-aarch64.so.1";
 
@@ -337,15 +342,25 @@ impl ArchProcess {
                 .spawn()
                 .expect("Failed to run command");
 
+            // Read on a thread and wait for the process itself: programs it leaves behind can hold
+            // the pipe open forever, and the caller must still learn that it ended.
             let reader = BufReader::new(child.stdout.take().unwrap());
-            for line in reader.lines() {
-                let line = line.unwrap();
-                log(line);
-            }
+            let (drained, is_drained) = mpsc::channel::<()>();
+            thread::spawn(move || {
+                for line in reader.lines().map_while(Result::ok) {
+                    log(line);
+                }
+                let _ = drained.send(());
+            });
 
-            child
-                .wait_with_output()
-                .expect("Failed to wait for command")
+            let status = child.wait().expect("Failed to wait for command");
+            // What it wrote just before it ended is still in the pipe.
+            let _ = is_drained.recv_timeout(OUTPUT_GRACE);
+            Output {
+                status,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            }
         } else {
             process.output().expect("Failed to run command")
         }

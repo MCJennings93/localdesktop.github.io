@@ -1189,3 +1189,24 @@ Then the user's order resumes: remaining short fixes (GL renderer in ld-frameben
 User: no further audio test (no earbuds), background persistence reasonably stable in use. So earbud switching is still NOT verified; revisit when they have the earbuds. User chose: commit, then hidden draw rate (step 2 of RESUME HERE), then the remaining checks (step 3), then the roadmap order.
 classes.dex regenerated in the alvrme/alpine-android image: its SDK has only android-30, so `sdkmanager "platforms;android-35" "build-tools;35.0.0"` first (--sdk_root=$ANDROID_SDK_ROOT). `--security-opt label=disable` for the mounts.
 CJK fonts and background running are committed separately on main, not pushed.
+
+## 2026-11-03 ~13:25 — Hidden draw rate FIXED; session-death bug found (both UNCOMMITTED)
+- Committed earlier today: c20d36f CJK fonts, 9c859af background running. Not pushed.
+- Hidden rate cause: KWin (wayland_output.cpp, 6.8.2) paces only on wp_presentation feedback, max 2 frames unanswered. Smithay's merge_into discards the superseded frame's feedback on each commit, so hidden KWin never waited. Fix: pre-commit hook holds superseded feedback while hidden (State.hold_feedback, per-surface HeldFeedback); each 100 ms tick answers one per surface; window_shown discards the rest.
+- Result (~/bin/ld-hiddenrate, new tool, build dev-9c859af-hidden-1): es2gears hidden 93.1 -> 8.4 fps; app CPU 103% -> 19% of a core; GPU busy 20% -> 1%; returned 118 fps, same as foreground. Idle session hidden: ~6-8% CPU either way. Battery drain itself NOT measured (current_now denied, phone plugged in): CPU and GPU are the proxy.
+- ld-backgroundtest --hidden 300 --screen-off: audio 100% for 293 s, 0 stream deaths, survives. --hidden 180: same. BUT phone has a secure lock, adb can't unlock, so "returned" in those runs was still hidden (9 fps); the second run also STARTED locked (procstate 4). The tool now fails if the app isn't really back in view. Return after screen off is NOT verified.
+- Session death while hidden: `run-as kill -9` on the top proot left it a zombie and the app noticed nothing: ArchProcess::run read stdout to EOF before waiting, and surviving guest programs hold the pipe. kwin survived the kill too. Fix in process.rs: read on a thread, wait on the child, 2 s grace for output. Built as ~/localdesktop-bench/apks/dev-9c859af-hidden-2.apk, NOT installed or tested (needs phone unlocked + Play Protect OK).
+- Remaining: session death hidden and visible on -2, return after screen off, real video in Brave, "Don't keep activities" (user toggles), "Close desktop" button, earbuds when available. Then ask to commit, then roadmap: GL renderer in ld-framebench, DNS refresh.
+
+## 2026-11-03 ~14:05 — Step 3 checks (phone build -2; -3 built, NOT installed; all UNCOMMITTED)
+User rule: no uiautomator, screencap or opening the shade on the phone (see memory). ld-backgroundtest's screenshot removed. Still using those commands: ld-abrun, ld-cjktest, ld-shadetest, ld-racetest, ld-shadejank (ld-shadejank's shade pulls are its whole point: ask before running).
+- Session death: hidden: noticed at once, 26 leftovers killed, notification, restarts on open. Visible: restarts in ~6 s, audio OK afterwards. PASS.
+- Real video in Brave: user heard audio while hidden, and hidden + locked ~2 min, fine on return. PASS.
+- Activity destroy ("Don't keep activities", user toggled, now off): restarts, no error box; exit-info EXIT_SELF status 0; no new ANR since 11-02. PASS. Session restarts instead of surviving: known limit.
+- Close desktop: the button is hidden behind the notification's expand arrow on this phone, the user couldn't find it. Added "Expand this to close it." to the text (build -3). The action fired through `run-as ... am start-foreground-service -a io.github.localdesktop.STOP`: process and kwin gone. A real tap on the button is NOT tested; the notification count stayed 1 in dumpsys (maybe a stale record), reopen after close NOT checked. App currently CLOSED on the phone.
+- ld-backgroundtest bug fixed: it counted all es2gears output lines, not FPS reports, so phases showed the wrong rates. One ld-hiddenrate foreground read 61.8 fps right after a restart, unexplained, not repeated (118 on rerun).
+- Earbud route change still NOT verified.
+- Next: user installs -3 (Play Protect), taps the button, reopens; then ask to commit (hidden rate + process.rs + notification text), then roadmap: GL renderer in ld-framebench, DNS refresh.
+
+## 2026-11-03 ~14:10 — Close desktop verified on build -3 (installed)
+User: hint text shows, button closes the app, notification goes away, desktop comes back on reopen. Step 3 done except earbuds. Still uncommitted: hidden rate, process.rs, notification text. Next: ask to commit, then GL renderer in ld-framebench, DNS refresh.

@@ -39,18 +39,18 @@ Done:
 - A foreground service with a notification ("Close desktop") keeps the app and its guest processes
   alive; swiping the app from recents ends the session.
 - Audio keeps running while hidden, and the AAudio sink reopens its stream when the output changes.
-- Clients keep drawing while the window is hidden.
-- A session that dies is noticed: the app restarts it if visible and it had been up for a while,
-  and otherwise says so in the notification. Leftover guest processes are cleaned up.
-- `ld-backgroundtest` passes: 120 s hidden with audio at 100% and the session intact. A real-world
-  test on battery was reasonably stable.
+- Clients keep drawing while the window is hidden, at about 10 fps. An es2gears client went from 93
+  to 8.4 fps, and the app from 103% to 19% of a core (`ld-hiddenrate`), then back to 118 fps on return.
+- A session that dies is noticed, hidden or visible, even if guest programs survive it: leftovers are
+  killed, and the app restarts it if visible and it had been up for a while, otherwise on next open,
+  with a notification saying so.
+- Checked on the phone: 5 minutes hidden with the screen off (`ld-backgroundtest`), real video in
+  Brave with the phone locked, a real activity destroy ("Don't keep activities"), the "Close desktop"
+  button.
 
 Open:
-- **Hidden draw rate.** Clients through KWin draw about 100 fps while hidden, not the intended 10 or
-  so. The battery cost hasn't been measured.
-- **Not yet verified on the phone:** switching audio output after the fix, a real activity destroy,
-  a session dying while hidden, screen off, a longer hide, real video in Brave, and the "Close
-  desktop" button.
+- **Switching audio output** (earbud to earbud to speaker) hasn't been retested since the fix.
+- **Battery drain** hasn't been measured directly; CPU and GPU load are the evidence so far.
 - **Surviving an activity destroy.** The process exits with the activity, which ends the session;
   keeping it needs the compositor off `android_main`.
 - **Android can still kill guest processes:** the phantom process killer needs "Disable child

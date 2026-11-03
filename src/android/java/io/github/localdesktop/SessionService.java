@@ -25,7 +25,8 @@ public final class SessionService extends Service {
     private static final int NOTIFICATION = 1;
     private static final String ACTION_STOP = "io.github.localdesktop.STOP";
     private static final String NOTIFICATIONS_PERMISSION = "android.permission.POST_NOTIFICATIONS";
-    private static final String RUNNING = "The desktop keeps running in the background.";
+    // Android hides a quiet notification's buttons until it is expanded, so say where the button is.
+    private static final String RUNNING = "The desktop keeps running in the background. Expand this to close it.";
     private static final String STOPPED = "The desktop stopped. Open the app to start it again.";
 
     public static void start(final Activity activity) {
