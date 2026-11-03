@@ -1,0 +1,9 @@
+#!/bin/sh
+# Installs the CJK fonts on guests set up before they joined the package lists (fresh installs get
+# them with the desktop). Run in the background at session start: it's a large download, and text
+# only needs it once it lands, so it mustn't hold up the session. A failure retries next session.
+FONTS=noto-fonts-cjk
+pacman -Q $FONTS >/dev/null 2>&1 && exit 0
+# A session killed mid-install leaves pacman's lock and maybe some of the files behind.
+pgrep -x pacman >/dev/null || rm -f /var/lib/pacman/db.lck
+pacman -S --needed --noconfirm --noprogressbar --overwrite '/usr/share/fonts/noto-cjk/*' $FONTS

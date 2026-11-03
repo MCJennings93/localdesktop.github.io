@@ -65,6 +65,7 @@ export QT_FORCE_STDERR_LOGGING=1
 /usr/local/bin/localdesktop-packages || true
 # The emulated Steam Deck controller's sysfs entries and state ring (see localdesktop-pad).
 /usr/local/bin/localdesktop-pad setup || true
+/usr/local/bin/localdesktop-fonts &
 export LD_PRELOAD="/usr/local/lib/udev-netlink-shim.so /usr/local/lib/memfd-reopen-shim.so /usr/local/lib/segvbt.so /usr/local/lib/loopback-owner.so$GPU_PRELOAD"
 unset DISPLAY
 

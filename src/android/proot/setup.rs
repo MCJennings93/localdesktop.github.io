@@ -963,6 +963,7 @@ xfconf-query -c xsettings -p /Xft/DPI -t int -s {xft_dpi}
 xfconf-query -c xfce4-panel -p /panels/panel-2/autohide-behavior -s 0 2>/dev/null
 
 /usr/local/bin/localdesktop-no-sandbox-entries
+/usr/local/bin/localdesktop-fonts &
 
 # Xfce opens links through its own preferred browser, not mimeapps.list, and ships Firefox as the
 # default. Brave may be installed later, so check each session; an existing file is the user's choice.
