@@ -3,7 +3,8 @@
 # (a GL client animating continuously).
 # For each phase prints SurfaceFlinger's view of our layer (fps, frame-time histogram, jank,
 # latch-to-present), the app's frame-stats log lines (redraws/s, new client buffers/s, render
-# and swap times) and CPU seconds of the app, KWin and plasmashell.
+# and swap times) and CPU seconds of the app, KWin and plasmashell. It records the GL renderer first,
+# and warns if it is a CPU one.
 # Needs the app running with files/frame-stats present (the app reads it at start).
 # Usage: ld-framebench [label]
 # LD_PKG picks the app: io.github.localdesktop (default) or app.polarbear (builds before the rename).
@@ -66,6 +67,20 @@ drawer() {
         adb shell input swipe 900 600 900 1700 250; sleep 0.8
     done
 }
+renderer() {
+    # What es2gears will draw on, asked with the same environment, so a CPU path can't pass for a GPU
+    # one. es2gears itself doesn't say.
+    printf '%s\n' 'xargs -0 -a /proc/$(pgrep -x '"$SHELL_PROC"')/environ sh -c '"'"'exec env -i "$@" eglinfo -B -p wayland'"'"' sh 2>/dev/null | sed -n "s/^OpenGL ES profile renderer: //p"' > "$OUT/renderer.cmd"
+    GL_RENDERER=$("$(dirname "$(readlink -f "$0")")"/ld-run "$(cat "$OUT/renderer.cmd")" 30 | grep -v '^\[exit' | head -1)
+    rm -f "$OUT/renderer.cmd"
+    GL_RENDERER=${GL_RENDERER:-unknown}
+    echo "$GL_RENDERER" > "$OUT/renderer"
+    case $GL_RENDERER in
+    *llvmpipe* | *softpipe* | *swrast* | *lavapipe*) echo "renderer: $GL_RENDERER  WARNING: on the CPU, not the GPU" ;;
+    unknown) echo "renderer: unknown  WARNING: could not ask (is the session running with the runner?)" ;;
+    *) echo "renderer: $GL_RENDERER" ;;
+    esac
+}
 gears() {
     # es2gears through the session runner (see ld-run): a GL client drawing as fast as KWin lets it.
     # It runs with plasmashell's environment, as an app started from the drawer would, so it gets
@@ -79,6 +94,7 @@ gears() {
 }
 adb shell input keyevent KEYCODE_WAKEUP
 echo "label=$LABEL  output in $OUT" | tee "$OUT/summary.txt"
+renderer | tee -a "$OUT/summary.txt"
 phase idle idle
 phase drawer drawer
 phase gears gears

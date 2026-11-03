@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""Background test for Local Desktop: what keeps running while the app is minimized.
+
+Starts three things in the live session: a heartbeat (a once-a-second timer: gaps mean the guest was
+frozen), es2gears_wayland (frame rate: does a client keep drawing?) and a silent audio stream through
+paplay (is audio still consumed, and does the stream survive?). Then: foreground, HOME, foreground
+again. Reports each phase and whether the app, the session and the workload survived.
+
+Usage: ld-backgroundtest [--hidden SECONDS] [--fore SECONDS] [--screen-off] [--keep]
+  --hidden      how long the app stays minimized (default 120)
+  --fore        foreground time before and after (default 25)
+  --screen-off  also turn the screen off while hidden, and back on afterwards
+  --keep        leave the workload running at the end
+
+Needs the runner in the session and the app in the foreground. It takes over the phone's screen.
+The audio is silence, so nothing is heard.
+"""
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+PKG = os.environ.get("LD_PKG", "io.github.localdesktop")
+ACTIVITY = f"{PKG}/android.app.NativeActivity"
+RUN = os.path.expanduser("~/bin/ld-run")
+SHELL_PROC = os.environ.get("SHELL_PROC", "plasmashell")
+D = "/tmp/bgtest"
+
+AUDIO = r'''
+import subprocess, sys, time
+RATE, CHUNK = 48000 * 2, 9600
+CMD = ["paplay", "--raw", "--rate=48000", "--channels=1", "--format=s16le", "--stream-name=ld-backgroundtest"]
+log = open("/tmp/bgtest/audio.log", "a", buffering=1)
+zero = bytes(CHUNK)
+while True:
+    p = subprocess.Popen(CMD, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    log.write(f"{time.time():.2f} start\n")
+    sent, last = 0, time.time()
+    try:
+        while True:
+            p.stdin.write(zero); p.stdin.flush()
+            sent += CHUNK
+            now = time.time()
+            if now - last >= 1:
+                log.write(f"{now:.2f} bytes {sent}\n"); last, sent = now, 0
+    except (BrokenPipeError, OSError):
+        pass
+    log.write(f"{time.time():.2f} died {p.poll()}\n")
+    p.kill(); p.wait()
+    time.sleep(1)
+'''
+
+START = f'''
+pkill -f {D}/ 2>/dev/null; pkill -f es2gears_wayland 2>/dev/null; sleep 1
+rm -rf {D}; mkdir -p {D}
+cat > {D}/audio.py <<'PY'
+{AUDIO}
+PY
+cat > {D}/heart.sh <<'SH'
+while :; do date +%s.%N >> {D}/heart.log; sleep 1; done
+SH
+P=$(pgrep -x {SHELL_PROC} | head -1)
+launch() {{ (xargs -0 -a /proc/$P/environ sh -c 'exec env -i "$@" '"$1" sh > "$2" 2>&1 &) ; }}
+launch "sh {D}/heart.sh" /dev/null
+launch "stdbuf -oL es2gears_wayland" {D}/gears.raw
+launch "python3 {D}/audio.py" {D}/audio.err
+(sh -c 'while :; do printf "%s " "$(date +%s)"; grep -c FPS {D}/gears.raw; sleep 1; done' > {D}/gearslines.log &)
+echo started
+'''
+
+STOP = f"pkill -f {D}/; pkill -f es2gears_wayland; pkill -f ld-backgroundtest; echo stopped"
+
+
+def sh(cmd, timeout=60):
+    try:
+        return subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout).stdout.strip()
+    except subprocess.TimeoutExpired:
+        return ""
+
+
+def adb(cmd, timeout=60):
+    return sh(f"adb shell {json.dumps(cmd)}", timeout)
+
+
+def guest_read(name):
+    return subprocess.run(
+        ["adb", "shell", f"run-as {PKG} cat files/arch{D}/{name}"], capture_output=True, text=True, timeout=60
+    ).stdout
+
+
+def now():
+    return float(adb("date +%s"))
+
+
+def snapshot():
+    return {
+        "app": adb(f"pidof {PKG}"),
+        "kwin": adb("pidof kwin_wayland"),
+        "shell": adb(f"pidof {SHELL_PROC}"),
+        "gears": adb("pidof es2gears_wayland"),
+    }
+
+
+def proc_state():
+    out = adb(f"dumpsys activity processes {PKG}", 30)
+    state = re.search(r"curProcState=(\d+)", out)
+    adj = re.search(r"curAdj=(-?\d+)|oom adj.*?(\d+)", out)
+    frozen = "frozen" if re.search(r"mFrozen=true|isFrozen=true|frozen=true", out) else "not frozen"
+    return f"procstate={state.group(1) if state else '?'} adj={(adj.group(1) or adj.group(2)) if adj else '?'} {frozen}"
+
+
+def heart_report(lines, a, b):
+    t = [float(x) for x in lines if x and a <= float(x) < b]
+    if len(t) < 2:
+        return f"{len(t)} beats"
+    gaps = [q - p for p, q in zip(t, t[1:])]
+    return f"{len(t)} beats, longest gap {max(max(gaps), t[0] - a, b - t[-1]):.1f}s"
+
+
+def audio_report(lines, a, b):
+    rate, starts, deaths = [], 0, 0
+    for line in lines:
+        f = line.split()
+        if len(f) < 2 or not a <= float(f[0]) < b:
+            continue
+        if f[1] == "bytes":
+            rate.append(int(f[2]))
+        elif f[1] == "start":
+            starts += 1
+        elif f[1] == "died":
+            deaths += 1
+    secs = b - a
+    ok = sum(rate) / 96000
+    return f"{ok:.0f}s of audio in {secs:.0f}s ({100 * ok / secs:.0f}%), stream died {deaths}x, restarted {starts}x"
+
+
+def audio_seconds(lines, a, b):
+    total = 0
+    for line in lines:
+        f = line.split()
+        if len(f) >= 3 and f[1] == "bytes" and a <= float(f[0]) < b:
+            total += int(f[2])
+    return total / 96000
+
+
+def gears_report(raw, stamps, a, b):
+    """es2gears prints a line every 5 s of drawing; pair each line with when it appeared."""
+    fps = re.findall(r"= *([\d.]+) FPS", raw)
+    seen = 0
+    per = []
+    for stamp, count in stamps:
+        if count > seen:
+            for i in range(seen, min(count, len(fps))):
+                if a <= stamp < b:
+                    per.append(float(fps[i]))
+            seen = count
+    if not per:
+        return "no frames reported"
+    return f"{len(per)} reports, {sum(per) / len(per):.0f} fps average"
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--hidden", type=int, default=120)
+    ap.add_argument("--fore", type=int, default=25)
+    ap.add_argument("--screen-off", action="store_true")
+    ap.add_argument("--keep", action="store_true")
+    args = ap.parse_args()
+
+    build = adb(f"run-as {PKG} cat files/arch/etc/localdesktop/build-id")
+    print(f"build: {build}  hidden: {args.hidden}s  screen off: {args.screen_off}", flush=True)
+    logcat_start = adb("date '+%m-%d %H:%M:%S.000'")
+    if "started" not in subprocess.run([RUN, START, "60"], capture_output=True, text=True).stdout:
+        sys.exit("could not start the workload (is the session running with the runner?)")
+    time.sleep(8)
+    before = snapshot()
+    print("before:", before, flush=True)
+
+    t0 = now()
+    time.sleep(args.fore)
+    t1 = now()
+    fore_state = proc_state()
+    adb("input keyevent KEYCODE_HOME")
+    if args.screen_off:
+        time.sleep(3)
+        adb("input keyevent KEYCODE_SLEEP")
+    time.sleep(min(30, args.hidden / 2))
+    hidden_state = proc_state()
+    hidden_mid = snapshot()
+    time.sleep(max(0, args.hidden - min(30, args.hidden / 2)))
+    t2 = now()
+    hidden_state_end = proc_state()
+    if args.screen_off:
+        adb("input keyevent KEYCODE_WAKEUP")
+        time.sleep(1)
+        adb("wm dismiss-keyguard")
+    adb(f"am start -n {ACTIVITY}")
+    time.sleep(3)
+    # A lock screen keeps the app hidden, and then "returned" would measure nothing.
+    in_view = f"topResumedActivity=ActivityRecord{{" in adb("dumpsys activity activities | grep -m1 topResumedActivity") and PKG in adb("dumpsys activity activities | grep -m1 topResumedActivity")
+    time.sleep(args.fore)
+    t3 = now()
+    after = snapshot()
+    time.sleep(1)
+
+    heart = guest_read("heart.log").split()
+    audio = guest_read("audio.log").splitlines()
+    gears = guest_read("gears.raw")
+    stamps = []
+    for line in guest_read("gearslines.log").splitlines():
+        f = line.split()
+        if len(f) == 2:
+            stamps.append((float(f[0]), int(f[1])))
+
+    print()
+    for name, a, b in (
+        ("foreground", t0, t1),
+        ("hidden, first 10s", t1, t1 + 10),
+        ("hidden", t1 + 10, t2),
+        ("returned", t2, t3),
+    ):
+        if b <= a:
+            continue
+        print(f"== {name} ({b - a:.0f}s)")
+        print("   heartbeat:", heart_report(heart, a, b))
+        print("   gears:    ", gears_report(gears, stamps, a, b))
+        print("   audio:    ", audio_report(audio, a, b))
+    # After the 10 s the hide itself takes to settle, and with the screen on:
+    hidden_audio = audio_seconds(audio, t1 + 10, t2) / max(1, t2 - t1 - 10)
+    hidden_gears = gears_report(gears, stamps, t1 + 10, t2) != "no frames reported"
+    returned_gears = gears_report(gears, stamps, t2, t3) != "no frames reported"
+    checks = {
+        "audio plays while hidden": hidden_audio >= 0.9,
+        "client draws while hidden": hidden_gears,
+        "client draws after return": returned_gears,
+        "app actually returned to view (not stopped by a lock screen)": in_view,
+    }
+    print()
+    print("process state: foreground", fore_state)
+    print("               hidden    ", hidden_state)
+    print("               hidden end", hidden_state_end)
+    print("hidden mid:", hidden_mid)
+    print("after:     ", after)
+    survived = {k: bool(before[k]) and before[k] == after[k] for k in before}
+    print("survived:  ", survived)
+    log = sh(f"adb logcat -d -T '{logcat_start}' | grep -E 'Desktop session ended|Trimming phantom|Process {PKG} .*has died|lmkd.*{PKG}' | cut -c1-130 | tail -4", 60)
+    print("kills:     ", log or "none")
+    if not args.keep:
+        subprocess.run([RUN, STOP, "20"], capture_output=True)
+    checks.update({f"{k} survived": v for k, v in survived.items()})
+    for name, ok in checks.items():
+        print("PASS" if ok else "FAIL", name)
+    print("RESULT:", "PASS" if all(checks.values()) else "FAIL")
+
+
+main()

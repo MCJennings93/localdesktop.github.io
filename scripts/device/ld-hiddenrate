@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""What a client draws, and what the app costs, while Local Desktop is hidden.
+
+Runs es2gears_wayland in the live session, then reports its frame rate, the CPU of all the app's
+processes (% of one core) and the GPU's busy % for: foreground, and hidden. PASS if the client keeps
+drawing while hidden, at no more than --limit fps.
+
+Usage: ld-hiddenrate [--secs N] [--limit FPS] [--no-gears]   (--no-gears: session idle, no pass/fail)
+Needs the runner in the session and the app in the foreground. It takes over the phone's screen.
+"""
+import argparse, os, re, subprocess, sys, time
+
+PKG = os.environ.get("LD_PKG", "io.github.localdesktop")
+ACTIVITY = f"{PKG}/android.app.NativeActivity"
+RUN = os.path.expanduser("~/bin/ld-run")
+D = "/tmp/hiddenrate"
+START = f"""
+pkill -f es2gears_wayland; sleep 1; rm -rf {D}; mkdir -p {D}
+P=$(pgrep -x plasmashell | head -1)
+(xargs -0 -a /proc/$P/environ sh -c 'exec env -i "$@" stdbuf -oL es2gears_wayland' sh > {D}/gears.raw 2>&1 &)
+echo started
+"""
+STOP = "pkill -f es2gears_wayland; echo stopped"
+
+
+def adb(cmd):
+    return subprocess.run(["adb", "shell", cmd], capture_output=True, text=True, timeout=90).stdout
+
+
+def ticks():
+    """Total CPU ticks (user + system) of every process running as the app's uid."""
+    out = adb(f"run-as {PKG} sh -c 'cat /proc/[0-9]*/stat 2>/dev/null'")
+    total = 0
+    for line in out.splitlines():
+        rest = line.rsplit(") ", 1)
+        if len(rest) == 2:
+            f = rest[1].split()
+            if len(f) > 12:
+                total += int(f[11]) + int(f[12])
+    return total
+
+
+def gears_lines():
+    out = adb(f"run-as {PKG} cat files/arch{D}/gears.raw")
+    return [float(x) for x in re.findall(r"= *([\d.]+) FPS", out)]
+
+
+def measure(label, secs, gears):
+    a, ta = ticks(), time.time()
+    before = len(gears_lines()) if gears else 0
+    busy = []
+    while time.time() - ta < secs:
+        m = re.search(r"\d+", adb("cat /sys/class/kgsl/kgsl-3d0/gpu_busy_percentage"))
+        if m:
+            busy.append(int(m.group()))
+        time.sleep(1)
+    b, tb = ticks(), time.time()
+    fps = gears_lines()[before:] if gears else []
+    # A report covers about 5 s of drawing; the first may straddle the previous phase.
+    rate = sum(fps[1:]) / len(fps[1:]) if len(fps) > 1 else (fps[0] if fps else None)
+    cpu = (b - a) / (tb - ta)
+    gpu = sum(busy) / len(busy) if busy else -1
+    show = f"{rate:6.1f} fps" if rate is not None else "   none   "
+    print(f"{label:12} client {show}   CPU {cpu:6.1f}% of a core   GPU busy {gpu:5.1f}%", flush=True)
+    return rate
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--secs", type=int, default=45)
+    ap.add_argument("--limit", type=float, default=20)
+    ap.add_argument("--no-gears", action="store_true")
+    args = ap.parse_args()
+    gears = not args.no_gears
+    print("build:", adb(f"run-as {PKG} cat files/arch/etc/localdesktop/build-id").strip(), flush=True)
+    adb(f"am start -n {ACTIVITY}")
+    time.sleep(3)
+    if gears:
+        if "started" not in subprocess.run([RUN, START, "60"], capture_output=True, text=True).stdout:
+            sys.exit("could not start the client (is the session running with the runner?)")
+    time.sleep(12)
+    measure("foreground", args.secs, gears)
+    adb("input keyevent KEYCODE_HOME")
+    time.sleep(12)
+    hidden = measure("hidden", args.secs, gears)
+    adb(f"am start -n {ACTIVITY}")
+    time.sleep(10)
+    back = measure("returned", min(args.secs, 25), gears)
+    if gears:
+        subprocess.run([RUN, STOP, "20"], capture_output=True)
+        ok = hidden is not None and 0 < hidden <= args.limit and bool(back)
+        print("RESULT:", "PASS" if ok else "FAIL", f"(hidden limit {args.limit:g} fps; client must draw again on return)")
+
+
+main()
