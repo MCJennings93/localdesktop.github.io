@@ -1,0 +1,22 @@
+#!/bin/sh
+# Does labwc start on the GPU, nested directly on the app's compositor? Runs it N times inside the
+# live session, as Xfce's session does, with a GL client in it. The client only starts once labwc is
+# past its output setup, so no frames means labwc hung there. It was a race: one run proves little.
+# Usage: ld-labwctest [runs, default 8]
+HERE=$(dirname "$(readlink -f "$0")")
+N=${1:-8}
+SHELL_PROC=${SHELL_PROC:-plasmashell}
+"$HERE"/ld-run '
+P=$(pgrep -x '"$SHELL_PROC"' | head -1); fails=0; i=0
+while [ $i -lt '"$N"' ]; do
+    i=$((i + 1)); rm -f /tmp/labwctest.log /tmp/labwctest-gears.log
+    xargs -0 -a /proc/$P/environ sh -c "exec env \"\$@\" WAYLAND_DISPLAY=wayland-0 XDG_CONFIG_HOME=/tmp/labwc-empty labwc -d -s \"sh -c \\\"stdbuf -oL es2gears_wayland > /tmp/labwctest-gears.log 2>&1\\\"\"" sh > /tmp/labwctest.log 2>&1 &
+    sleep 14
+    L=$(pgrep -x labwc | head -1)
+    fps=$(grep FPS /tmp/labwctest-gears.log 2>/dev/null | tail -1 | sed "s/.*= *//")
+    if [ -n "$L" ] && [ -n "$fps" ]; then r=OK; else r=FAIL; fails=$((fails + 1)); fi
+    echo "run $i: $r client ${fps:-no frames}"
+    pkill -f es2gears_wayland; pkill -x labwc; sleep 1
+done
+[ $fails = 0 ] && echo "RESULT: PASS" || echo "RESULT: FAIL ($fails of '"$N"')"
+' $((N * 17 + 15))

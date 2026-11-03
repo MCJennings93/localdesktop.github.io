@@ -20,5 +20,6 @@ for another device. Results go to `~/localdesktop-bench/`.
 | `ld-hiddenrate [--secs N] [--limit FPS] [--no-gears]` | What a client draws and what the app costs (CPU, GPU busy) in the foreground, hidden and on return. |
 | `ld-backgroundtest [--hidden N] [--fore N] [--screen-off] [--keep]` | Heartbeat, es2gears and an audio stream across hiding the app. A secure lock screen stops the return, which it reports as a failure. |
 | `ld-dnstest [secs] [host]` | Watches the guest's DNS servers and whether a lookup works while you change the network. |
+| `ld-labwctest [runs]` | Starts labwc on the GPU on the app's compositor, repeatedly, with a GL client in it, inside the live session. |
 
 Every tool records the device's build ID next to its results.

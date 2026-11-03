@@ -55,10 +55,7 @@ Open:
 ### 2. Compositor
 1. **Shade jank under the frame loop:** about 1 point higher than with the best loop on each
    desktop ([docs/frame-loop.md](docs/frame-loop.md)).
-2. **labwc stalls on a fence on the GPU** in its first frame, so Xfce on a fresh install needs
-   `WLR_RENDERER=pixman` for now. Fix the stall in the sync layer (`kgsl-syncobj`,
-   `kgsl-drm-shim`).
-3. Later features, both designed in `docs/architecture.md`:
+2. Later features, both designed in `docs/architecture.md`:
    - **Multiple displays** (KWin virtual outputs per Android display).
    - **Two-way notification bridge** (Linux ↔ Android shade).
 

@@ -147,9 +147,8 @@ impl XdgShellHandler for State {
         &mut self.xdg_shell_state
     }
 
-    fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        self.configure_toplevel(&surface);
-    }
+    // The first configure waits for the surface's first commit, see `configure_on_initial_commit`.
+    fn new_toplevel(&mut self, _surface: ToplevelSurface) {}
 
     fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {
         // Handle popup creation here
@@ -222,6 +221,7 @@ impl CompositorHandler for State {
                 super::frame_stats::buffer_committed();
             }
         }
+        self.configure_on_initial_commit(surface);
         on_commit_buffer_handler::<Self>(surface);
         self.render_pending |= attached;
         self.frame_pending = true;
@@ -385,6 +385,32 @@ impl State {
         }
     }
 
+    /// A toplevel's first configure answers its first commit, as xdg-shell says, and again after it
+    /// unmaps by committing no buffer. Sending it any earlier can hang a client: wlroots (labwc)
+    /// moves the toplevel to a private event queue just before that commit and waits there, so a
+    /// configure it has already read stays behind on the old queue, and it waits forever.
+    fn configure_on_initial_commit(&self, surface: &WlSurface) {
+        let Some(toplevel) = self
+            .xdg_shell_state
+            .toplevel_surfaces()
+            .iter()
+            .find(|it| it.wl_surface() == surface)
+        else {
+            return;
+        };
+        let unmapped = with_states(surface, |states| {
+            matches!(
+                states.cached_state.get::<SurfaceAttributes>().current().buffer,
+                Some(smithay::wayland::compositor::BufferAssignment::Removed)
+            )
+        });
+        if unmapped {
+            toplevel.reset_initial_configure_sent();
+        } else if !toplevel.is_initial_configure_sent() {
+            self.configure_toplevel(toplevel);
+        }
+    }
+
     fn configure_toplevel(&self, surface: &ToplevelSurface) {
         let size = self.surface_size(surface.wl_surface());
         surface.with_pending_state(|state| {
@@ -409,7 +435,9 @@ impl State {
                     })
                 });
             }
-            self.configure_toplevel(surface);
+            if surface.is_initial_configure_sent() {
+                self.configure_toplevel(surface);
+            }
         }
     }
 }
@@ -424,14 +452,17 @@ impl FractionalScaleHandler for State {
                 fractional_scale.set_preferred_scale(scale)
             })
         });
-        // The toplevel was configured in window pixels before its client asked for a scale.
+        // A toplevel already configured was configured in window pixels, before its client asked
+        // for a scale.
         if let Some(toplevel) = self
             .xdg_shell_state
             .toplevel_surfaces()
             .iter()
             .find(|toplevel| toplevel.wl_surface() == &surface)
         {
-            self.configure_toplevel(toplevel);
+            if toplevel.is_initial_configure_sent() {
+                self.configure_toplevel(toplevel);
+            }
         }
     }
 }
