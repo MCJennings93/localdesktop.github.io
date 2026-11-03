@@ -2,6 +2,7 @@ use crate::android::{
     accessibility::{self, AppUserEvent},
     backend::wayland::{
         compositor::{
+            discard_held_feedback_surface_tree, discard_next_feedback_surface_tree,
             send_frames_surface_tree, surface_scale, take_presentation_feedback_surface_tree,
             ClientState, State,
         },
@@ -574,13 +575,22 @@ pub fn dispatch_clients(backend: &mut WaylandBackend) {
     schedule_frame(backend);
 }
 
-/// Tell clients the frames they asked about were never shown.
-fn discard_presentation_feedback(backend: &mut WaylandBackend) {
-    let mut feedback = Vec::new();
-    for surface in backend.compositor.state.xdg_shell_state.toplevel_surfaces() {
-        take_presentation_feedback_surface_tree(surface.wl_surface(), &mut feedback);
+/// The window was hidden: nothing is drawn until it returns, and clients get [`HIDDEN_FRAME_PERIOD`]
+/// pacing from here on.
+pub fn window_hidden(backend: &mut WaylandBackend) {
+    backend.graphic_renderer = None;
+    backend.compositor.state.hold_feedback = true;
+    // A client may already be waiting on a frame callback, with no commit to come.
+    schedule_frame(backend);
+}
+
+/// The window is back, with a renderer again: clients paced on feedback go back to the display's rate.
+pub fn window_shown(backend: &mut WaylandBackend) {
+    let state = &mut backend.compositor.state;
+    state.hold_feedback = false;
+    for surface in state.xdg_shell_state.toplevel_surfaces() {
+        discard_held_feedback_surface_tree(surface.wl_surface());
     }
-    feedback.into_iter().for_each(|it| it.discarded());
 }
 
 /// Let the clients' surfaces start on their next frame.
@@ -603,11 +613,20 @@ pub fn on_vsync(backend: &mut WaylandBackend) {
     }
     backend.rendered_since_vsync = false;
     if backend.graphic_renderer.is_none() {
+        let mut more = false;
+        for surface in backend.compositor.state.xdg_shell_state.toplevel_surfaces() {
+            more |= discard_next_feedback_surface_tree(surface.wl_surface());
+        }
         if backend.compositor.state.frame_pending {
-            discard_presentation_feedback(backend);
             release_frame_callbacks(backend, super::frame_stats::Release::Vsync);
         }
         schedule_frame(backend);
+        // With feedback held, a client may be waiting on it with no commit to come.
+        if more {
+            if let Some(clock) = backend.frame_clock.as_mut() {
+                clock.request_after(HIDDEN_FRAME_PERIOD);
+            }
+        }
         return;
     }
 
@@ -647,7 +666,7 @@ pub fn idle(backend: &mut WaylandBackend, event_loop: &ActiveEventLoop) {
 
 /// Draw new content right away unless a frame already went out for this refresh, and keep
 /// vsync ticking while anything is left for it.
-pub fn schedule_frame(backend: &mut WaylandBackend) {
+fn schedule_frame(backend: &mut WaylandBackend) {
     // Hidden, nothing is drawn, but clients stay paced so their programs keep running.
     if backend.graphic_renderer.is_none() {
         if backend.compositor.state.frame_pending {
@@ -677,8 +696,8 @@ fn render_frame(backend: &mut WaylandBackend) {
         }
         Err(error) => {
             log::error!("Redraw failed; dropping renderer until next resume: {error}");
-            backend.graphic_renderer = None;
             accessibility::set_runtime_active(false);
+            window_hidden(backend);
         }
     }
 }

@@ -23,6 +23,15 @@ frame-stats' `cb[redraw/vsync/commit]` counters show which release applied: on X
 commit releases, and on Plasma mostly vsync. The rest of the GPU stack is separate from the loop:
 linux-dmabuf, the KGSL render node, zero-copy import, presentation feedback and frame stats.
 
+## While the window is hidden
+
+Nothing is drawn, but clients stay paced so their programs keep running: a timer ticks every 100 ms
+(`HIDDEN_FRAME_PERIOD`) and releases frame callbacks. That alone doesn't slow KWin, which paces
+itself only on wp_presentation feedback, rendering until two frames are unanswered. Smithay discards
+a frame's feedback as soon as the next commit supersedes it, so a hidden KWin never waited. While
+hidden, a pre-commit hook therefore holds superseded feedback (`hold_superseded_feedback`), and each
+tick answers one frame per surface as discarded. `ld-hiddenrate` measures the result.
+
 ## How it was chosen (test of 2026-10-30)
 
 This loop replaced our earlier one after a side-by-side test against it and against upstream's.

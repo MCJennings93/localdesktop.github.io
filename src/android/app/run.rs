@@ -6,7 +6,7 @@ use crate::android::{
         pipewire_standalone_aaudio,
         wayland::{
             bind, centralize, centralize_injected_keyboard, dispatch_clients, handle, idle,
-            on_vsync, schedule_frame, start_frame_loop, write_guest_output_state,
+            on_vsync, start_frame_loop, window_hidden, window_shown, write_guest_output_state,
             CentralizedEvent, State,
         },
         webview::ErrorVariant,
@@ -113,7 +113,10 @@ impl ApplicationHandler<AppUserEvent> for PolarBearApp {
             PolarBearBackend::Wayland(ref mut backend) => {
                 if backend.graphic_renderer.is_none() {
                     match bind(event_loop) {
-                        Ok(winit) => backend.graphic_renderer = Some(winit),
+                        Ok(winit) => {
+                            backend.graphic_renderer = Some(winit);
+                            window_shown(backend);
+                        }
                         Err(error) => {
                             log::error!("Failed to initialize Wayland renderer on resume: {error}");
                             accessibility::set_runtime_active(false);
@@ -206,12 +209,10 @@ impl ApplicationHandler<AppUserEvent> for PolarBearApp {
         event_loop.set_control_flow(ControlFlow::Wait);
 
         if let PolarBearBackend::Wayland(backend) = &mut self.backend {
-            backend.graphic_renderer = None;
             backend.key_counter = 0;
             backend.reset_touch_state();
             backend.pointer_pressed = false;
-            // A client may already be waiting on a frame callback, with no commit to come.
-            schedule_frame(backend);
+            window_hidden(backend);
         }
     }
 

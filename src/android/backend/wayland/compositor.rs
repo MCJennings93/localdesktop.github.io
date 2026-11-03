@@ -1,4 +1,5 @@
 use super::bind::bind_socket;
+use std::{cell::RefCell, collections::VecDeque};
 use smithay::{
     backend::{
         allocator::{dmabuf::Dmabuf, Format, Fourcc, Modifier},
@@ -18,7 +19,7 @@ use smithay::{
         buffer::BufferHandler,
         dmabuf::{DmabufFeedbackBuilder, DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
         compositor::{
-            with_states, with_surface_tree_downward, CompositorClientState, CompositorHandler,
+            add_pre_commit_hook, with_states, with_surface_tree_downward, CompositorClientState, CompositorHandler,
             CompositorState, SurfaceAttributes, TraversalAction,
         },
         fractional_scale::{
@@ -94,6 +95,9 @@ pub struct State {
     pub render_pending: bool,
     /// A client committed since frame callbacks were last released.
     pub frame_pending: bool,
+    /// The window is hidden: keep superseded wp_presentation feedback instead of discarding it at
+    /// once, see [`hold_superseded_feedback`].
+    pub hold_feedback: bool,
 }
 
 /// Offer zwp_linux_dmabuf_v1 so nested KWin can composite with OpenGL (Zink on Turnip/KGSL)
@@ -189,6 +193,14 @@ impl CompositorHandler for State {
         &client.get_data::<ClientState>().unwrap().compositor_state
     }
 
+    fn new_surface(&mut self, surface: &WlSurface) {
+        add_pre_commit_hook::<Self, _>(surface, |state, _display, surface| {
+            if state.hold_feedback {
+                hold_superseded_feedback(surface);
+            }
+        });
+    }
+
     fn commit(&mut self, surface: &WlSurface) {
         // Frame-callback-only commits (no attach) change nothing on screen.
         let attached = with_states(surface, |states| {
@@ -275,6 +287,64 @@ pub fn take_presentation_feedback_surface_tree(
                     .callbacks
                     .drain(..),
             );
+        },
+        |_, _, &()| true,
+    );
+}
+
+/// Feedback for frames a hidden window never showed, oldest first.
+type HeldFeedback = RefCell<VecDeque<PresentationFeedbackCallback>>;
+
+/// About to commit a new frame while hidden: put aside the feedback of the frame it supersedes.
+///
+/// Smithay would discard that feedback now, as the protocol says for a superseded frame. But nested
+/// KWin paces itself on this feedback alone: it renders until two frames are unanswered, and a
+/// discard answers one. With every commit answering the one before, it never waits, so it and its
+/// clients run flat out with nobody watching. Visible windows don't have this problem: there, each
+/// drawn frame is answered at the display's rate and few are superseded.
+fn hold_superseded_feedback(surface: &WlSurface) {
+    with_states(surface, |states| {
+        let held = states.data_map.get_or_insert(HeldFeedback::default);
+        let mut attributes = states.cached_state.get::<PresentationFeedbackCachedState>();
+        held.borrow_mut().extend(attributes.current().callbacks.drain(..));
+    });
+}
+
+/// The window stays hidden: answer one frame of each surface in a tree (the oldest held, else the
+/// current one) as never shown, which lets a client paced on feedback draw one more. Returns
+/// whether any feedback is still held.
+pub fn discard_next_feedback_surface_tree(surface: &WlSurface) -> bool {
+    let mut more = false;
+    with_surface_tree_downward(
+        surface,
+        (),
+        |_, _, &()| TraversalAction::DoChildren(()),
+        |_surf, states, &()| {
+            let held = states.data_map.get_or_insert(HeldFeedback::default);
+            let mut held = held.borrow_mut();
+            match held.pop_front() {
+                Some(oldest) => oldest.discarded(),
+                None => {
+                    let mut attributes = states.cached_state.get::<PresentationFeedbackCachedState>();
+                    attributes.current().callbacks.drain(..).for_each(|it| it.discarded());
+                }
+            }
+            more |= !held.is_empty();
+        },
+        |_, _, &()| true,
+    );
+    more
+}
+
+/// The window is back: answer all held feedback as never shown. The current frame's waits to be drawn.
+pub fn discard_held_feedback_surface_tree(surface: &WlSurface) {
+    with_surface_tree_downward(
+        surface,
+        (),
+        |_, _, &()| TraversalAction::DoChildren(()),
+        |_surf, states, &()| {
+            let held = states.data_map.get_or_insert(HeldFeedback::default);
+            held.borrow_mut().drain(..).for_each(|it| it.discarded());
         },
         |_, _, &()| true,
     );
@@ -436,6 +506,7 @@ impl Compositor {
             dmabuf_global,
             render_pending: false,
             frame_pending: false,
+            hold_feedback: false,
         };
 
         Ok(Compositor {
