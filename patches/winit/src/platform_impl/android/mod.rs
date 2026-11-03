@@ -289,9 +289,9 @@ impl<T: 'static> EventLoop<T> {
                     warn!("TODO: forward onStop notification to application");
                 },
                 MainEvent::Destroy => {
-                    // XXX: maybe exit mainloop to drop things before being
-                    // killed by the OS?
-                    warn!("TODO: forward onDestroy notification to application");
+                    // NativeActivity's onDestroy blocks Android's main thread until
+                    // android_main returns, so the loop has to end.
+                    self.window_target.p.exit();
                 },
                 MainEvent::InsetsChanged { .. } => {
                     // XXX: how to forward this state to applications?
@@ -685,11 +685,10 @@ impl<T: 'static> EventLoop<T> {
                     //
                     // For now, user_events and redraw_requests are the only reasons to expect
                     // a wake up here so we can ignore the wake up if there are no events/requests.
-                    // We also ignore wake ups while suspended.
+                    // User events still count while suspended: the compositor keeps serving its
+                    // clients with the window hidden.
                     self.pending_redraw |= self.redraw_flag.get_and_reset();
-                    if !self.running
-                        || (!self.pending_redraw && !self.user_events_receiver.has_incoming())
-                    {
+                    if !self.pending_redraw && !self.user_events_receiver.has_incoming() {
                         return;
                     }
                 },

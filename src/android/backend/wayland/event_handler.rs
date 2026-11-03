@@ -529,6 +529,10 @@ pub fn start_frame_loop(backend: &mut WaylandBackend, proxy: &EventLoopProxy<App
     }
 }
 
+/// How often clients may draw while the window is hidden: slow enough to spare the battery, fast
+/// enough that programs waiting on their next frame keep going.
+const HIDDEN_FRAME_PERIOD: Duration = Duration::from_millis(100);
+
 /// Accept new clients and handle their requests, then draw whatever they committed.
 pub fn dispatch_clients(backend: &mut WaylandBackend) {
     let compositor = &mut backend.compositor;
@@ -570,6 +574,15 @@ pub fn dispatch_clients(backend: &mut WaylandBackend) {
     schedule_frame(backend);
 }
 
+/// Tell clients the frames they asked about were never shown.
+fn discard_presentation_feedback(backend: &mut WaylandBackend) {
+    let mut feedback = Vec::new();
+    for surface in backend.compositor.state.xdg_shell_state.toplevel_surfaces() {
+        take_presentation_feedback_surface_tree(surface.wl_surface(), &mut feedback);
+    }
+    feedback.into_iter().for_each(|it| it.discarded());
+}
+
 /// Let the clients' surfaces start on their next frame.
 fn release_frame_callbacks(backend: &mut WaylandBackend, why: super::frame_stats::Release) {
     let compositor = &mut backend.compositor;
@@ -590,6 +603,11 @@ pub fn on_vsync(backend: &mut WaylandBackend) {
     }
     backend.rendered_since_vsync = false;
     if backend.graphic_renderer.is_none() {
+        if backend.compositor.state.frame_pending {
+            discard_presentation_feedback(backend);
+            release_frame_callbacks(backend, super::frame_stats::Release::Vsync);
+        }
+        schedule_frame(backend);
         return;
     }
 
@@ -629,9 +647,14 @@ pub fn idle(backend: &mut WaylandBackend, event_loop: &ActiveEventLoop) {
 
 /// Draw new content right away unless a frame already went out for this refresh, and keep
 /// vsync ticking while anything is left for it.
-fn schedule_frame(backend: &mut WaylandBackend) {
-    // While hidden, clients get no frame callbacks and stop drawing until we are visible again.
+pub fn schedule_frame(backend: &mut WaylandBackend) {
+    // Hidden, nothing is drawn, but clients stay paced so their programs keep running.
     if backend.graphic_renderer.is_none() {
+        if backend.compositor.state.frame_pending {
+            if let Some(clock) = backend.frame_clock.as_mut() {
+                clock.request_after(HIDDEN_FRAME_PERIOD);
+            }
+        }
         return;
     }
     if backend.compositor.state.render_pending && !backend.rendered_since_vsync {

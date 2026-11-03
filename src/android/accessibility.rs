@@ -19,6 +19,8 @@ pub enum AppUserEvent {
     WaylandReady,
     /// The display is about to refresh.
     Vsync,
+    /// The desktop session's process ended; `early` if it hadn't been up for long.
+    SessionEnded { early: bool },
 }
 
 #[derive(Clone, Copy, Debug)]

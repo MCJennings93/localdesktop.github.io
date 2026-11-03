@@ -1,11 +1,13 @@
 use super::build::{PolarBearApp, PolarBearBackend};
+use super::session_service;
 use crate::android::{
     accessibility::{self, AppUserEvent},
     backend::{
         pipewire_standalone_aaudio,
         wayland::{
             bind, centralize, centralize_injected_keyboard, dispatch_clients, handle, idle,
-            on_vsync, start_frame_loop, write_guest_output_state, CentralizedEvent, State,
+            on_vsync, schedule_frame, start_frame_loop, write_guest_output_state,
+            CentralizedEvent, State,
         },
         webview::ErrorVariant,
     },
@@ -21,6 +23,7 @@ use smithay::utils::Transform;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
+use winit::platform::android::activity::AndroidApp;
 use winit::window::WindowId;
 
 fn configure_output(backend: &mut crate::android::backend::wayland::WaylandBackend) {
@@ -77,6 +80,12 @@ fn configure_output(backend: &mut crate::android::backend::wayland::WaylandBacke
         .set_host_geometry(size.into(), guest_scale_factor);
 }
 
+fn start_session(android_app: AndroidApp) {
+    launch();
+    // Start the standalone-client PipeWire/AAudio backend.
+    pipewire_standalone_aaudio::spawn_after_ready(android_app);
+}
+
 impl ApplicationHandler<AppUserEvent> for PolarBearApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         run_in_jvm(
@@ -121,9 +130,8 @@ impl ApplicationHandler<AppUserEvent> for PolarBearApp {
 
                 start_frame_loop(backend, &self.frontend.proxy);
                 handle(CentralizedEvent::Redraw, backend, event_loop);
-                launch();
-                // Start the standalone-client PipeWire/AAudio backend.
-                pipewire_standalone_aaudio::spawn_after_ready(self.frontend.android_app.clone());
+                run_in_jvm(session_service::start, self.frontend.android_app.clone());
+                start_session(self.frontend.android_app.clone());
             }
         }
     }
@@ -148,6 +156,20 @@ impl ApplicationHandler<AppUserEvent> for PolarBearApp {
             }
             AppUserEvent::WaylandReady => dispatch_clients(backend),
             AppUserEvent::Vsync => on_vsync(backend),
+            AppUserEvent::SessionEnded { early } => {
+                // Restart if it's in view, unless it just died at once and would keep doing so.
+                // Otherwise the next resume does it.
+                let visible = backend.graphic_renderer.is_some();
+                let restarting = visible && !early;
+                log::warn!("Desktop session ended, visible: {visible}, restarting: {restarting}");
+                run_in_jvm(
+                    move |env, app| session_service::session_ended(env, app, visible, restarting),
+                    self.frontend.android_app.clone(),
+                );
+                if restarting {
+                    start_session(self.frontend.android_app.clone());
+                }
+            }
         }
     }
 
@@ -188,8 +210,13 @@ impl ApplicationHandler<AppUserEvent> for PolarBearApp {
             backend.key_counter = 0;
             backend.reset_touch_state();
             backend.pointer_pressed = false;
-            // Kill the standalone-client PipeWire/AAudio backend if it was started.
-            pipewire_standalone_aaudio::shutdown();
+            // A client may already be waiting on a frame callback, with no commit to come.
+            schedule_frame(backend);
         }
+    }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // Kill the standalone-client PipeWire/AAudio backend if it was started.
+        pipewire_standalone_aaudio::shutdown();
     }
 }

@@ -93,6 +93,13 @@ impl FrameClock {
         }
     }
 
+    /// Ask for one tick after `delay` on the timer: nothing refreshes a hidden window.
+    pub fn request_after(&mut self, delay: Duration) {
+        if self.deadline.is_none() {
+            self.deadline = Some(Instant::now() + delay);
+        }
+    }
+
     /// Called when the `AppUserEvent::Vsync` arrives.
     pub fn ticked(&mut self) {
         self.requested_at = None;

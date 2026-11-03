@@ -35,28 +35,27 @@ else, the session keeps running and nothing closes or crashes. A browser playing
 keeps playing (audio continues); a game keeps running or pauses on its own, and is intact on
 return.
 
-What is known today:
-- While the app is hidden, the compositor drops its GPU renderer and stops sending frame
-  callbacks, so clients stop drawing until the app is visible again (`schedule_frame` in
-  `event_handler.rs`). Video and games may stall on that rather than keep going.
-- Android can kill or throttle the app's processes in the background: the phantom process killer
-  (seen 2026-10-27; the test phone has "Disable child process restrictions" on), battery
-  optimization, and memory pressure.
-- The session only starts while the app is in the foreground.
+Done:
+- A foreground service with a notification ("Close desktop") keeps the app and its guest processes
+  alive; swiping the app from recents ends the session.
+- Audio keeps running while hidden, and the AAudio sink reopens its stream when the output changes.
+- Clients keep drawing while the window is hidden.
+- A session that dies is noticed: the app restarts it if visible and it had been up for a while,
+  and otherwise says so in the notification. Leftover guest processes are cleaned up.
+- `ld-backgroundtest` passes: 120 s hidden with audio at 100% and the session intact. A real-world
+  test on battery was reasonably stable.
 
-Likely parts:
-- a foreground service with a notification, so Android keeps the app and its proot children alive;
-- frame callbacks (or presentation feedback) that keep pacing while hidden, without drawing to the
-  window;
-- audio that keeps running;
-- a clean return when the window comes back.
-
-First: a background test (`ld-*` tool) that minimizes the app during a video and a game for N
-minutes, checks that audio keeps playing and nothing crashes or restarts, and measures what happens
-on return.
-
-**Guest-death handling**, in the same layer: when Android kills proot, the app notices, cleans up
-the leftover guest processes and says so.
+Open:
+- **Hidden draw rate.** Clients through KWin draw about 100 fps while hidden, not the intended 10 or
+  so. The battery cost hasn't been measured.
+- **Not yet verified on the phone:** switching audio output after the fix, a real activity destroy,
+  a session dying while hidden, screen off, a longer hide, real video in Brave, and the "Close
+  desktop" button.
+- **Surviving an activity destroy.** The process exits with the activity, which ends the session;
+  keeping it needs the compositor off `android_main`.
+- **Android can still kill guest processes:** the phantom process killer needs "Disable child
+  process restrictions" on the phone. There is no wake lock, so the CPU may sleep with the screen off
+  unless audio holds it.
 
 ### 3. Compositor
 1. **Shade jank under the frame loop:** about 1 point higher than with the best loop on each

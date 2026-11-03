@@ -10,6 +10,7 @@ pub mod android {
     pub mod app {
         pub mod build;
         pub mod run;
+        pub mod session_service;
     }
     pub mod backend {
         pub mod pipewire_standalone_aaudio;

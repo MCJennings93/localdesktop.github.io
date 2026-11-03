@@ -2350,6 +2350,7 @@ dependencies = [
 name = "localdesktop"
 version = "3.0.5"
 dependencies = [
+ "ab_glyph",
  "android-sdkmanager-rs",
  "android_logger",
  "anyhow",
@@ -2358,6 +2359,7 @@ dependencies = [
  "image 0.24.9",
  "jni",
  "khronos-egl",
+ "libc",
  "libloading",
  "log 0.4.27",
  "mockall",
@@ -2380,6 +2382,7 @@ dependencies = [
  "smithay",
  "tar",
  "tempfile",
+ "tiny-skia",
  "toml 0.8.22",
  "tracing",
  "typst-as-lib",

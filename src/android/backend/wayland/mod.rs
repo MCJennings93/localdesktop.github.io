@@ -15,7 +15,7 @@ pub use output_state::write_guest_output_state;
 
 pub use compositor::{Compositor, State};
 pub use event_centralizer::{centralize, centralize_injected_keyboard, CentralizedEvent};
-pub use event_handler::{dispatch_clients, handle, idle, on_vsync, start_frame_loop};
+pub use event_handler::{dispatch_clients, handle, idle, on_vsync, schedule_frame, start_frame_loop};
 pub use frame_clock::FrameClock;
 pub use gamepad::Gamepad;
 pub use watcher::WaylandWatcher;

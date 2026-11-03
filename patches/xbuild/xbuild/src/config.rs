@@ -190,6 +190,13 @@ impl Config {
                 "screenLayout",
                 "density",
                 "uiMode",
+                "mcc",
+                "mnc",
+                "touchscreen",
+                "navigation",
+                "colorMode",
+                "fontWeightAdjustment",
+                "grammaticalGender",
             ]
             .join("|")
         });

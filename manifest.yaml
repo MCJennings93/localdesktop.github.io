@@ -20,6 +20,12 @@ android:
       extract_native_libs: true # Required for proot invocations
       use_cleartext_traffic: true # Required for connecting to ws://127.0.0.1, see assets/setup-progress.html
       services:
+        - name: io.github.localdesktop.SessionService
+          exported: false
+          foreground_service_type: specialUse
+          properties:
+            - name: android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE
+              value: "Keeps the user's Linux desktop session and its programs running while the app is in the background"
         - name: io.github.localdesktop.KeyboardAccessibilityService
           permission: android.permission.BIND_ACCESSIBILITY_SERVICE
           label: "@string/keyboard_service_label"
@@ -44,6 +50,8 @@ android:
       - name: android.permission.INTERNET
       - name: android.permission.ACCESS_NETWORK_STATE
       - name: android.permission.POST_NOTIFICATIONS
+      - name: android.permission.FOREGROUND_SERVICE
+      - name: android.permission.FOREGROUND_SERVICE_SPECIAL_USE
       - name: android.permission.MANAGE_EXTERNAL_STORAGE
       - name: android.permission.READ_EXTERNAL_STORAGE
       - name: android.permission.WRITE_EXTERNAL_STORAGE

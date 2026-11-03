@@ -83,4 +83,7 @@ fn android_main(android_app: AndroidApp) {
 
     // Phase 2: Run
     event_loop.run_app(&mut app).expect("Failed to run app");
+    // The window is gone for good, and the foreground service would keep a process with no
+    // compositor alive under the session.
+    std::process::exit(0);
 }

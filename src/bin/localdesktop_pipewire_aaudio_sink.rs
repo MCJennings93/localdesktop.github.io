@@ -218,6 +218,11 @@ mod android {
     /// Channel count of the opened AAudio stream, published before the stream
     /// starts so the data callback can emit silence until `SINK` exists.
     static AAUDIO_CHANNELS: AtomicUsize = AtomicUsize::new(0);
+    /// The open AAudio stream, swapped when it is reopened.
+    static AAUDIO_STREAM: AtomicPtr<aaudio::Stream> = AtomicPtr::new(std::ptr::null_mut());
+    /// The rate and channel count the sink was set up for; a reopened stream must match.
+    static AAUDIO_FORMAT: OnceLock<(u32, u32)> = OnceLock::new();
+    static AAUDIO_REOPENING: AtomicBool = AtomicBool::new(false);
 
     impl Sink {
         /// Ask the graph for another quantum once the ring runs low. Called
@@ -365,6 +370,37 @@ mod android {
             None => "unknown".to_string(),
         };
         note!("AAudio error: {text}");
+        // Android ends a stream when the output device changes (earbuds to speaker, say), and it
+        // stays dead until reopened. AAudio forbids doing that from this callback.
+        if !AAUDIO_REOPENING.swap(true, Ordering::AcqRel) {
+            std::thread::spawn(reopen_aaudio);
+        }
+    }
+
+    fn reopen_aaudio() {
+        let Some(&(rate, channels)) = AAUDIO_FORMAT.get() else {
+            AAUDIO_REOPENING.store(false, Ordering::Release);
+            return;
+        };
+        close_aaudio(AAUDIO_STREAM.swap(std::ptr::null_mut(), Ordering::AcqRel));
+        loop {
+            match open_aaudio(rate, channels) {
+                Ok((stream, opened_rate, opened_channels))
+                    if (opened_rate, opened_channels) == (rate, channels) =>
+                {
+                    AAUDIO_STREAM.store(stream, Ordering::Release);
+                    break;
+                }
+                Ok((stream, opened_rate, opened_channels)) => {
+                    note!("reopened at {opened_rate} Hz, {opened_channels} channels: retrying");
+                    close_aaudio(stream);
+                }
+                Err(error) => note!("reopening AAudio failed: {error}"),
+            }
+            // The new device may not be ready yet.
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        AAUDIO_REOPENING.store(false, Ordering::Release);
     }
 
     /// Open and start an AAudio output stream, returning it together with the
@@ -690,6 +726,8 @@ mod android {
 
         let result = (|| {
             let (aaudio_stream, rate, channels) = open_aaudio(args.rate, args.channels)?;
+            AAUDIO_STREAM.store(aaudio_stream, Ordering::Release);
+            let _ = AAUDIO_FORMAT.set((rate, channels));
             let sink = match SINK.get() {
                 Some(sink) => sink,
                 None => {
@@ -703,7 +741,7 @@ mod android {
             sink.drive_enabled.store(false, Ordering::Release);
             sink.process_pending.store(false, Ordering::Release);
             sink.stream.store(std::ptr::null_mut(), Ordering::Release);
-            close_aaudio(aaudio_stream);
+            close_aaudio(AAUDIO_STREAM.swap(std::ptr::null_mut(), Ordering::AcqRel));
 
             note!(
                 "stopped underrun_frames={} dropped_frames={}",
