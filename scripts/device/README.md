@@ -19,5 +19,6 @@ for another device. Results go to `~/localdesktop-bench/`.
 | `ld-shadetest <label> [cycles] [flags]` | Opens and closes Android's quick-settings shade over Brave and screenshots the screen after each close, counting garbage. The pass/fail test for GPU-buffer hand-off sync with Chromium. `VIDEO=1`, `URL=`, `PROFILE_SRC=` play a video, open another page or use another profile; it also counts frame-stats GREEN frames. |
 | `ld-hiddenrate [--secs N] [--limit FPS] [--no-gears]` | What a client draws and what the app costs (CPU, GPU busy) in the foreground, hidden and on return. |
 | `ld-backgroundtest [--hidden N] [--fore N] [--screen-off] [--keep]` | Heartbeat, es2gears and an audio stream across hiding the app. A secure lock screen stops the return, which it reports as a failure. |
+| `ld-dnstest [secs] [host]` | Watches the guest's DNS servers and whether a lookup works while you change the network. |
 
 Every tool records the device's build ID next to its results.

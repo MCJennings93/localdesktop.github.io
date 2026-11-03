@@ -1,0 +1,28 @@
+#!/bin/sh
+# Does the guest's DNS follow Android's network? Prints /etc/resolv.conf's servers now and at each
+# change, with Android's default network and whether a lookup in the guest works, until the time is up.
+# Change the network yourself meanwhile (Wi-Fi, mobile data, a VPN).
+# Usage: ld-dnstest [seconds, default 120] [host to look up, default example.com]
+PKG=${LD_PKG:-io.github.localdesktop}
+HERE=$(dirname "$(readlink -f "$0")")
+SECS=${1:-120}
+HOST=${2:-example.com}
+servers() { adb shell "run-as $PKG cat files/arch/etc/resolv.conf" | sed -n 's/^nameserver //p' | tr -d '\r' | tr '\n' ' '; }
+network() { adb shell "dumpsys connectivity" | sed -n 's/.*Active default network: //p' | head -1 | tr -d '\r'; }
+report() {
+    # getent uses glibc's resolver, as guest programs do. ld-run, because ld-exec has no network.
+    ok=$("$HERE"/ld-run "getent hosts $HOST >/dev/null && echo works || echo FAILS" 20 2>/dev/null | head -1)
+    echo "$(date +%T) network $(network): $1 lookup $ok"
+}
+end=$(($(date +%s) + SECS))
+last=$(servers)
+report "$last"
+while [ "$(date +%s)" -lt "$end" ]; do
+    sleep 2
+    now=$(servers)
+    if [ "$now" != "$last" ]; then
+        last=$now
+        report "$last"
+    fi
+done
+report "$last"

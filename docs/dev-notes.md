@@ -1210,3 +1210,14 @@ User rule: no uiautomator, screencap or opening the shade on the phone (see memo
 
 ## 2026-11-03 ~14:10 — Close desktop verified on build -3 (installed)
 User: hint text shows, button closes the app, notification goes away, desktop comes back on reopen. Step 3 done except earbuds. Still uncommitted: hidden rate, process.rs, notification text. Next: ask to commit, then GL renderer in ld-framebench, DNS refresh.
+
+## 2026-11-03 ~14:20 — Short fixes done: GL renderer, DNS refresh (tested, NOT committed)
+Committed and unpushed: e69b74a hidden rate, db92a6d session death + close hint.
+- ld-framebench records the renderer via `eglinfo -B -p wayland` with the client's environment (es2gears doesn't print it), warns on a CPU one. Real run: Zink on Turnip, es2gears 119 fps. CPU branch only checked as a pattern: GALLIUM_DRIVER=llvmpipe + LIBGL_ALWAYS_SOFTWARE=1 still gave Zink here, not investigated.
+- DNS: SessionService registers a default-network callback; onLinkPropertiesChanged calls nativeDnsServersChanged, which runs write_resolv_conf, now write + rename. Needs System.loadLibrary in the class: first build crashed the app (UnsatisfiedLinkError on ConnectivityThread), lesson: any Java class with natives needs it. Installed: dev-db92a6d-dns-2.apk.
+- Test ld-dnstest with the user toggling Wi-Fi: mobile -> Wi-Fi: resolv.conf became the Wi-Fi router's address, lookup works. Wi-Fi off: back to the carrier servers (log, 14:19:39), lookup works. Lookups are new processes; a long-running program picking it up (Brave) NOT tested. VPN NOT tested. Hidden NOT tested. keep-resolv-conf path unchanged, not re-run.
+- ld-hiddenrate, ld-backgroundtest moved to scripts/device with ~/bin symlinks. ld-browsertest and ld-cjktest still only in ~/bin.
+- Next in the order: compositor: shade jank (its test, ld-shadejank, pulls the shade: ask, see no-screen-capture rule), labwc fence stall, then multi-display / notification bridge.
+
+## 2026-11-03 ~14:25 — GL renderer and DNS refresh committed (not pushed)
+The user approved these two commits. Not yet answered: how to test shade jank (ld-shadejank pulls the shade: see the rule above) or start with the labwc fence stall instead. Ask before starting the compositor work.

@@ -7,4 +7,5 @@
 -keep class io.github.localdesktop.SessionService {
     public static void start(android.app.Activity);
     public static void sessionEnded(android.app.Activity, boolean, boolean);
+    private static native void nativeDnsServersChanged(java.lang.String[]);
 }

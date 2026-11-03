@@ -19,17 +19,12 @@ What works: Plasma Mobile with KWin GPU compositing and zero-copy dmabuf import,
 and Firefox on the GPU; Steam in Game Mode (gamescope nested in KWin, Steam Deck UI), with a
 progress notification while Steam starts or updates; Bastion (x86, FEX); the emulated Steam Deck
 controller in Steam's UI; Brave as the default browser (Firefox if Brave isn't installed); Chinese,
-Japanese and Korean text, with the right glyphs per language (Noto CJK).
+Japanese and Korean text, with the right glyphs per language (Noto CJK). The guest's DNS follows Android's
+network as it changes.
 
 ## Order of work (set 2026-10-30)
 
-### 1. Short fixes, in this order
-1. **GL renderer in `ld-framebench`.** Record the renderer es2gears runs on, so a CPU path can't be
-   mistaken for a GPU one (the Xfce figures in [docs/frame-loop.md](docs/frame-loop.md)).
-2. **DNS refresh.** The app writes the guest's `resolv.conf` from Android's DNS only at start; it
-   should follow network changes (Wi-Fi ↔ mobile data, VPN).
-
-### 2. App process lifecycle
+### 1. App process lifecycle
 **Keep running in the background.** When the app is minimized and the phone is used for something
 else, the session keeps running and nothing closes or crashes. A browser playing a YouTube video
 keeps playing (audio continues); a game keeps running or pauses on its own, and is intact on
@@ -57,7 +52,7 @@ Open:
   process restrictions" on the phone. There is no wake lock, so the CPU may sleep with the screen off
   unless audio holds it.
 
-### 3. Compositor
+### 2. Compositor
 1. **Shade jank under the frame loop:** about 1 point higher than with the best loop on each
    desktop ([docs/frame-loop.md](docs/frame-loop.md)).
 2. **labwc stalls on a fence on the GPU** in its first frame, so Xfce on a fresh install needs
@@ -67,7 +62,7 @@ Open:
    - **Multiple displays** (KWin virtual outputs per Android display).
    - **Two-way notification bridge** (Linux ↔ Android shade).
 
-### 4. Steam and games
+### 3. Steam and games
 1. **Controller input:**
    - **Physical controllers.** A controller paired with Android (e.g. a Switch Pro Controller)
      becomes the Steam Deck controller Steam reads: gamepad events from winit instead of keys and

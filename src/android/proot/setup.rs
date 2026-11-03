@@ -1374,8 +1374,9 @@ fn install_turnip(fs_root: &Path, sha256: &str, android_app: &AndroidApp) -> std
 }
 
 /// The guest uses glibc's resolver, which knows nothing of Android's (netd), so it gets the
-/// active network's servers written out; glibc reads at most three.
-fn write_resolv_conf(fs_root: &Path, android_servers: &[String]) {
+/// active network's servers written out; glibc reads at most three, and notices a new file on its
+/// next lookup. Called at every start and when the servers change (see `SessionService`).
+pub fn write_resolv_conf(fs_root: &Path, android_servers: &[String]) {
     if fs_root.join("etc/localdesktop/keep-resolv-conf").exists() {
         return;
     }
@@ -1385,7 +1386,7 @@ fn write_resolv_conf(fs_root: &Path, android_servers: &[String]) {
         ("Android's", android_servers.iter().map(String::as_str).collect())
     };
     let mut content = format!(
-        "# Written by Local Desktop at every start from {source} DNS servers.\n\
+        "# Written by Local Desktop from {source} DNS servers, at every start and when they change.\n\
          # To manage this file yourself, create /etc/localdesktop/keep-resolv-conf.\n"
     );
     for server in servers.iter().take(3) {
@@ -1396,7 +1397,9 @@ fn write_resolv_conf(fs_root: &Path, android_servers: &[String]) {
     if fs::read_to_string(&path).is_ok_and(|old| old == content) {
         return;
     }
-    match fs::write(&path, &content) {
+    // Replaced in one step: guest programs can be reading it at any moment now.
+    let staging = path.with_extension("conf.new");
+    match fs::write(&staging, &content).and_then(|()| fs::rename(&staging, &path)) {
         Ok(()) => log::info!("Wrote /etc/resolv.conf from {source} DNS servers: {servers:?}"),
         Err(error) => log::error!("Failed to write {}: {error}", path.display()),
     }
