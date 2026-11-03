@@ -123,7 +123,7 @@ fn default_check() -> String {
 }
 
 fn default_install() -> String {
-    "stdbuf -oL pacman -Syu --needed --noconfirm --noprogressbar noto-fonts noto-fonts-cjk xfce4 labwc wlr-randr xorg-xwayland xdg-desktop-portal xdg-desktop-portal-gtk squeekboard firefox evince pipewire pipewire-audio pipewire-alsa"
+    "stdbuf -oL pacman -Syu --needed --noconfirm --noprogressbar noto-fonts noto-fonts-cjk python-gobject xfce4 labwc wlr-randr xorg-xwayland xdg-desktop-portal xdg-desktop-portal-gtk squeekboard firefox evince pipewire pipewire-audio pipewire-alsa"
         .to_string()
 }
 /// Direct the desktop session to the compositor and the host PipeWire socket.

@@ -26,6 +26,13 @@ android:
           properties:
             - name: android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE
               value: "Keeps the user's Linux desktop session and its programs running while the app is in the background"
+        - name: io.github.localdesktop.NotificationBridgeService
+          permission: android.permission.BIND_NOTIFICATION_LISTENER_SERVICE
+          label: "Notifications on the Linux desktop"
+          exported: true
+          intent_filters:
+            - actions:
+                - android.service.notification.NotificationListenerService
         - name: io.github.localdesktop.KeyboardAccessibilityService
           permission: android.permission.BIND_ACCESSIBILITY_SERVICE
           label: "@string/keyboard_service_label"

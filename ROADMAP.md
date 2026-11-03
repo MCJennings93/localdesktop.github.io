@@ -20,7 +20,8 @@ and Firefox on the GPU; Steam in Game Mode (gamescope nested in KWin, Steam Deck
 progress notification while Steam starts or updates; Bastion (x86, FEX); the emulated Steam Deck
 controller in Steam's UI; Brave as the default browser (Firefox if Brave isn't installed); Chinese,
 Japanese and Korean text, with the right glyphs per language (Noto CJK). The guest's DNS follows Android's
-network as it changes.
+network as it changes. Notifications mirrored between the desktop and Android,
+dismissals included ([architecture](docs/architecture.md)).
 
 ## Order of work (set 2026-10-30)
 
@@ -55,9 +56,8 @@ Open:
 ### 2. Compositor
 1. **Shade jank under the frame loop:** about 1 point higher than with the best loop on each
    desktop ([docs/frame-loop.md](docs/frame-loop.md)).
-2. Later features, both designed in `docs/architecture.md`:
-   - **Multiple displays** (KWin virtual outputs per Android display).
-   - **Two-way notification bridge** (Linux ↔ Android shade).
+2. **Multiple displays** (KWin virtual outputs per Android display), a later feature designed in
+   `docs/architecture.md`.
 
 ### 3. Steam and games
 1. **Controller input:**

@@ -47,6 +47,8 @@ public final class SessionService extends Service {
             @Override
             public void run() {
                 watchNetwork(activity);
+                NotificationBridge.start(activity);
+                NotificationAccessPrompt.showIfNeeded(activity);
                 if (Build.VERSION.SDK_INT >= 33
                         && activity.checkSelfPermission(NOTIFICATIONS_PERMISSION) != PackageManager.PERMISSION_GRANTED) {
                     activity.requestPermissions(new String[] {NOTIFICATIONS_PERMISSION}, 0);
@@ -104,6 +106,10 @@ public final class SessionService extends Service {
             close();
             return START_NOT_STICKY;
         }
+        if (intent != null && NotificationBridge.ACTION_DISMISSED.equals(intent.getAction())) {
+            NotificationBridge.dismissed(intent.getIntExtra(NotificationBridge.EXTRA_ID, 0));
+            return START_NOT_STICKY;
+        }
         if (Build.VERSION.SDK_INT >= 26) {
             NotificationChannel channel =
                     new NotificationChannel(CHANNEL, "Desktop session", NotificationManager.IMPORTANCE_LOW);
@@ -128,6 +134,7 @@ public final class SessionService extends Service {
     }
 
     private void close() {
+        NotificationBridge.cancelMirrors();
         stopForeground(true);
         stopSelf();
         Process.killProcess(Process.myPid());

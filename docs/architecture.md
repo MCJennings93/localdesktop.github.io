@@ -129,28 +129,30 @@ Audio does not come from the guest. `pipewire_standalone_aaudio` runs PipeWire a
 - **Preferred:** have `prepare_wireplumber_share` write a `wireplumber.conf.d/` drop-in that disables `support.dbus` in the `main` profile. Nothing on the Android side needs a bus.
 - **Alternative:** once the guest session starts a session bus at a known path (for example under the guest `/tmp`), export `DBUS_SESSION_BUS_ADDRESS=unix:path=<ARCH_FS_ROOT>/tmp/…` from `apply_wireplumber_env`. `resumed` spawns WirePlumber right after `launch()`, so the two race and there is no guarantee the guest bus exists yet. This option needs explicit ordering or a WirePlumber restart, and is only worth it if portal integration is wanted.
 
-### Planned — two-way notification bridge
+### Two-way notification bridge
 
-*Not implemented yet.* The goal is that a notification raised in the Linux desktop shows up in Android's notification shade, and an Android notification shows up in the Linux desktop. The bridge has to cross the same boundary as audio: freedesktop notifications live on the guest's D-Bus session bus *inside* proot, while Android notifications live in the app process *outside* it. It reuses two patterns that already exist:
+A notification raised on the Linux desktop shows up in Android's shade, an Android notification shows up on the desktop, and dismissing one on either side dismisses it on both. Freedesktop notifications live on the guest's D-Bus session bus inside proot, and Android's live in the app process outside it. They meet at a Unix socket in the guest's `/tmp`, which is a plain directory both sides can reach.
 
-- **The JNI service bridge from input.** `KeyboardAccessibilityService.java` declares `native` methods that land in `accessibility.rs`, which queues events and wakes the winit loop through an `AppUserEvent`. A notification listener service follows the same shape.
-- **The guest `/tmp` rendezvous from audio.** The guest's `/tmp` is a plain directory under `ARCH_FS_ROOT`, so a Unix socket created there is reachable from both sides. That is how the PipeWire sockets cross today.
+- **Guest agent:** `/usr/local/bin/localdesktop-notify-bridge` starts inside each session's bus (Plasma's session script, Xfce's session init) and owns the socket, `/tmp/localdesktop-notify.sock`. Its header documents the messages, which are JSON, one per line. It watches `Notify` calls and their replies as a D-Bus *monitor*, so the desktop's own notification server keeps working, and it listens for `NotificationClosed` and `ActionInvoked`.
+- **Android side:** all in Java, with no native code. `NotificationBridge` connects to the socket, retrying while there's no session, and posts Linux notifications on a "Linux desktop" channel. `NotificationBridgeService`, a `NotificationListenerService`, sends Android's notifications to the desktop. The user grants it under Android's notification access, once asked by `NotificationAccessPrompt`; without it, only Linux to Android works.
 
-The pieces, and where each belongs:
+Which event does what:
 
-1. **Wire protocol:** a Unix socket at `<ARCH_FS_ROOT>/tmp/localdesktop-notify.sock`, owned by the Android side, carrying newline-delimited JSON messages: `post`, `close`, `action`, each with an origin, an ID, an app name, a summary, a body, an icon, and an action list.
-2. **Guest agent:** a new setup stage alongside `setup_chromium_no_sandbox`, plus an autostart entry, installs a small daemon in the guest. This keeps it out of the per-desktop launcher, so it works under both Xfce and Plasma. The daemon:
-   - **Linux → Android:** becomes a D-Bus *monitor* (`org.freedesktop.DBus.Monitoring.BecomeMonitor`) for `org.freedesktop.Notifications.Notify` and `CloseNotification`, and for the server's replies, which carry the assigned ID. It forwards each one to the socket. Because it only monitors, the desktop's own notification server (xfce4-notifyd, or plasmashell) keeps working unchanged. Owning the name instead would conflict with Plasma.
-   - **Android → Linux:** calls `Notify` on the session bus for each `post` received from the socket. It sets a hint `x-localdesktop-origin=android` so its own monitor ignores the echo. It maps `ActionInvoked` and `NotificationClosed` signals back to `action` and `close` messages.
-   - **Bus address:** the agent needs a predictable session bus address. Today `dbus-run-session` picks a random one. The launch command (`default_launch` in `config.rs`) should start the bus at a fixed `unix:path=/tmp/dbus-session` and export `DBUS_SESSION_BUS_ADDRESS`. That is also the address the second option for the WirePlumber D-Bus issue above would use.
-3. **Android side, Linux → Android:** a new `notifications.rs` beside `accessibility.rs`. It listens on the socket and posts through `NotificationManager` over JNI, on a "Linux desktop" channel. Each notification's content intent reopens the activity with the guest ID as an extra, and that comes back as a new `AppUserEvent` variant and is sent to the guest as `action` / `default`. Android 13+ (`target_sdk_version: 33`) also needs a runtime request for `POST_NOTIFICATIONS`. The permission is declared in `manifest.yaml`, but nothing requests it yet.
-4. **Android side, Android → Linux:** a new `NotificationBridgeService.java` extending `NotificationListenerService`, declared in `manifest.yaml` next to the accessibility service with `android.permission.BIND_NOTIFICATION_LISTENER_SERVICE`. The user grants it in *Settings → Notification access*, the same flow as the accessibility service. `onNotificationPosted` and `onNotificationRemoved` call `native` methods that forward to the socket. The service **must skip notifications whose package is `app.polarbear`**, or the two directions feed each other in a loop. When the user dismisses a mirrored notification in the guest, the service calls `cancelNotification(key)`.
+| Event | Result |
+|---|---|
+| Dismissed, or closed by its program, on Linux (`NotificationClosed` 2 or 3) | Its Android copy is cancelled |
+| A Linux popup times out (`NotificationClosed` 1) | Its Android copy stays: it may still be in the desktop's history |
+| A Linux copy dismissed on Android (its delete intent, via `SessionService`) | `CloseNotification` on Linux |
+| An Android copy dismissed on Linux (`NotificationClosed` 2) | `cancelNotification` on Android |
+| An Android notification removed on Android | `CloseNotification` on Linux |
+| An Android copy clicked on Linux | Its content intent is sent |
+| A Linux copy tapped on Android | The app opens |
 
-Constraints to design around:
+Loops are avoided at both ends: the service skips this app's own notifications, and the agent marks what it posts with an `x-localdesktop-origin` hint and ignores those when it sees them. The service also skips what the user can't dismiss (media, running services), group summaries and notifications marked secret.
 
-- The guest only exists while the activity's session is running. Android-side posts that arrive while it is down should be dropped, or the last few queued, as `accessibility.rs` does with `pending_events`. They must never block the listener service.
-- Linux notification icons arrive as icon names or as `image-data`, while Android wants a `Bitmap`. Small icons must come from the APK, so every mirrored notification uses the app's own small icon, with the guest's icon as the large icon.
-- Pass through only notification contents, never arbitrary commands. The socket is world-reachable inside the guest, so treat every message as untrusted input.
+When the session ends, its copies on Android are cancelled, and the agent closes Android's copies if the app goes away. Only contents cross the socket, never commands, and each side treats the other's messages as untrusted. `guest/tools/notify-bridge-test.py` tests the agent on any PC.
+
+Known limits: icons don't cross yet, so every copy on Android uses the app's own icon, and only the default action crosses. A Linux notification that leaves the desktop's history without a `NotificationClosed` keeps its copy on Android.
 
 That is the whole runtime loop: resume → bind renderer → configure output → launch desktop → translate input → render, suspend tears the renderer down, and the next resume rebuilds it. Everything below this line is about producing the `.apk` that ships all of the above.
 

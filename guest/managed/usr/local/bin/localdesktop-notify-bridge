@@ -1,0 +1,307 @@
+#!/usr/bin/env python3
+"""Mirrors notifications between the Linux desktop and Android, dismissals included.
+
+Runs inside the session, on its D-Bus session bus, and listens on a Unix socket in the guest's /tmp,
+which the app connects to (NotificationBridge.java). Messages are JSON, one per line.
+
+To Android:
+  {"type": "post", "id": N, "app": s, "title": s, "body": s}  a Linux notification, new or updated
+  {"type": "close", "id": N}     it's gone from the desktop
+  {"type": "cancel", "key": s}   the user dismissed an Android notification on the desktop
+  {"type": "open", "key": s}     the user clicked an Android notification on the desktop
+From Android:
+  {"type": "post", "key": s, "app": s, "title": s, "body": s}  an Android notification
+  {"type": "remove", "key": s}   it's gone from Android
+  {"type": "dismissed", "id": N} the user dismissed a mirrored Linux notification on Android
+
+Only notification contents cross, never commands, and either side treats the other's messages as
+untrusted. The desktop's own notification server keeps working: Linux notifications are watched as
+a D-Bus monitor, which also shows the id each one is given.
+
+Managed by the Local Desktop app: it is rewritten on every app start, so local edits are lost.
+"""
+import html
+import json
+import os
+import re
+import socket
+import sys
+
+try:
+    import gi
+
+    gi.require_version("Gio", "2.0")
+    from gi.repository import Gio, GLib
+except (ImportError, ValueError) as error:
+    sys.exit(f"notify-bridge: python-gobject is needed: {error}")
+
+SOCKET_PATH = os.environ.get("LOCALDESKTOP_NOTIFY_SOCKET", "/tmp/localdesktop-notify.sock")
+NAME = "org.freedesktop.Notifications"
+PATH = "/org/freedesktop/Notifications"
+ORIGIN_HINT = "x-localdesktop-origin"
+REASON_EXPIRED, REASON_DISMISSED, REASON_CLOSED = 1, 2, 3
+MAX_LINE = 64 * 1024
+MAX_TITLE, MAX_BODY = 512, 4096
+# Sent in order when the app connects.
+MAX_BACKLOG = 20
+MAX_PENDING = 64
+
+
+def log(*args):
+    print("notify-bridge:", *args, file=sys.stderr, flush=True)
+
+
+def plain(text, limit):
+    """A notification body may hold a little markup; Android shows plain text."""
+    return html.unescape(re.sub(r"<[^>]*>", "", text))[:limit]
+
+
+class Bridge:
+    def __init__(self):
+        address = Gio.dbus_address_get_for_bus_sync(Gio.BusType.SESSION, None)
+        flags = (
+            Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION
+        )
+        self.bus = Gio.DBusConnection.new_for_address_sync(address, flags, None, None)
+        self.client = None
+        self.received = b""
+        self.backlog = []
+        # Android notifications shown here, both ways.
+        self.android_ids, self.android_keys = {}, {}
+        # Notify calls seen, waiting for the reply that holds their id: (sender, serial) -> content.
+        self.pending = {}
+        self.linux_ids = set()
+
+        self.bus.signal_subscribe(
+            None, NAME, "NotificationClosed", PATH, None, Gio.DBusSignalFlags.NONE, self.on_closed
+        )
+        self.bus.signal_subscribe(
+            None, NAME, "ActionInvoked", PATH, None, Gio.DBusSignalFlags.NONE, self.on_action
+        )
+        self.monitor = Gio.DBusConnection.new_for_address_sync(address, flags, None, None)
+        self.monitor.set_exit_on_close(False)
+        self.monitoring = False
+        self.monitor.add_filter(self.on_monitored)
+        self.monitor.call_sync(
+            "org.freedesktop.DBus",
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus.Monitoring",
+            "BecomeMonitor",
+            GLib.Variant(
+                "(asu)",
+                ([f"type='method_call',interface='{NAME}',member='Notify'", "type='method_return'"], 0),
+            ),
+            None,
+            Gio.DBusCallFlags.NONE,
+            -1,
+            None,
+        )
+        self.monitoring = True
+
+        try:
+            os.unlink(SOCKET_PATH)
+        except FileNotFoundError:
+            pass
+        self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.server.bind(SOCKET_PATH)
+        self.server.listen(1)
+        GLib.io_add_watch(self.server.fileno(), GLib.IO_IN, self.on_connection)
+
+    # Linux to Android.
+
+    def on_monitored(self, _connection, message, incoming):
+        # This runs on GDBus's worker thread. Replies are everywhere on a bus, so most leave here.
+        # Nothing may pass on to GDBus once monitoring, or it answers calls it sees, and a monitor that
+        # sends anything is disconnected. Until then it needs the reply to BecomeMonitor.
+        if not incoming:
+            return message
+        kind = message.get_message_type()
+        if not self.monitoring and kind in (Gio.DBusMessageType.METHOD_RETURN, Gio.DBusMessageType.ERROR):
+            return message
+        if kind == Gio.DBusMessageType.METHOD_CALL and message.get_member() == "Notify":
+            body = message.get_body()
+            if body is not None and body.get_type_string() == "(susssasa{sv}i)":
+                call = (
+                    (message.get_sender(), message.get_serial()),
+                    body.get_child_value(0).get_string(),
+                    body.get_child_value(3).get_string(),
+                    body.get_child_value(4).get_string(),
+                    body.get_child_value(6).lookup_value(ORIGIN_HINT, None) is not None,
+                )
+                GLib.idle_add(self.on_notify_call, call)
+        elif kind == Gio.DBusMessageType.METHOD_RETURN and self.pending:
+            body = message.get_body()
+            if body is not None and body.get_type_string() == "(u)":
+                reply = ((message.get_destination(), message.get_reply_serial()), body.get_child_value(0).get_uint32())
+                GLib.idle_add(self.on_reply, reply)
+        return None
+
+    def on_notify_call(self, call):
+        call_id, app, title, body, ours = call
+        if not ours:
+            if len(self.pending) >= MAX_PENDING:
+                self.pending.clear()
+            self.pending[call_id] = (app, title, body)
+        return GLib.SOURCE_REMOVE
+
+    def on_reply(self, reply):
+        call_id, notification_id = reply
+        content = self.pending.pop(call_id, None)
+        if content is not None:
+            app, title, body = content
+            self.linux_ids.add(notification_id)
+            self.send(
+                {
+                    "type": "post",
+                    "id": notification_id,
+                    "app": app[:MAX_TITLE],
+                    "title": plain(title, MAX_TITLE),
+                    "body": plain(body, MAX_BODY),
+                }
+            )
+        return GLib.SOURCE_REMOVE
+
+    def on_closed(self, _bus, _sender, _path, _interface, _signal, parameters):
+        notification_id, reason = parameters.unpack()
+        key = self.android_keys.pop(notification_id, None)
+        if key is not None:
+            del self.android_ids[key]
+            # Only the user's dismissal reaches Android: anything else just ended the copy here.
+            if reason == REASON_DISMISSED:
+                self.send({"type": "cancel", "key": key})
+        elif notification_id in self.linux_ids and reason != REASON_EXPIRED:
+            # A popup that timed out may still be in the desktop's history, so its copy on Android stays.
+            self.linux_ids.discard(notification_id)
+            self.send({"type": "close", "id": notification_id})
+
+    def on_action(self, _bus, _sender, _path, _interface, _signal, parameters):
+        notification_id, _action = parameters.unpack()
+        key = self.android_keys.get(notification_id)
+        if key is not None:
+            self.send({"type": "open", "key": key})
+
+    def send(self, message):
+        if self.client is None:
+            self.backlog = (self.backlog + [message])[-MAX_BACKLOG:]
+            return
+        try:
+            self.client.sendall(json.dumps(message).encode() + b"\n")
+        except OSError as error:
+            log("lost the app:", error)
+            self.drop_client()
+
+    # Android to Linux.
+
+    def call(self, method, parameters, reply_type):
+        return self.bus.call_sync(
+            NAME, PATH, NAME, method, parameters, reply_type, Gio.DBusCallFlags.NONE, 5000, None
+        )
+
+    def on_android_post(self, key, app, title, body):
+        replaces = self.android_ids.get(key, 0)
+        hints = {ORIGIN_HINT: GLib.Variant("s", "android")}
+        parameters = GLib.Variant(
+            "(susssasa{sv}i)",
+            (
+                app[:MAX_TITLE],
+                replaces,
+                "",
+                html.escape(title[:MAX_TITLE], quote=False),
+                html.escape(body[:MAX_BODY], quote=False),
+                ["default", "Open"],
+                hints,
+                0,
+            ),
+        )
+        notification_id = self.call("Notify", parameters, GLib.VariantType("(u)")).unpack()[0]
+        self.android_ids[key] = notification_id
+        self.android_keys[notification_id] = key
+
+    def close(self, notification_id):
+        self.call("CloseNotification", GLib.Variant("(u)", (notification_id,)), None)
+
+    def on_android_remove(self, key):
+        notification_id = self.android_ids.pop(key, None)
+        if notification_id is not None:
+            del self.android_keys[notification_id]
+            self.close(notification_id)
+
+    def on_android_dismissed(self, notification_id):
+        if notification_id in self.linux_ids:
+            self.linux_ids.discard(notification_id)
+            self.close(notification_id)
+
+    def handle_line(self, line):
+        try:
+            message = json.loads(line)
+            kind = message["type"]
+            if kind == "post":
+                text = [message[it] for it in ("key", "app", "title", "body")]
+                if not all(isinstance(it, str) for it in text):
+                    raise ValueError("not text")
+                self.on_android_post(*text)
+            elif kind == "remove":
+                self.on_android_remove(str(message["key"]))
+            elif kind == "dismissed":
+                self.on_android_dismissed(int(message["id"]))
+        except (ValueError, KeyError, TypeError, OverflowError) as error:
+            log("ignoring a bad message:", error)
+        except GLib.Error as error:
+            log("the desktop's notification server said:", error.message)
+
+    # The socket.
+
+    def on_connection(self, _fd, _condition):
+        connection, _ = self.server.accept()
+        self.drop_client()
+        self.client = connection
+        GLib.io_add_watch(connection.fileno(), GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, self.on_data, connection)
+        backlog, self.backlog = self.backlog, []
+        for message in backlog:
+            self.send(message)
+        return GLib.SOURCE_CONTINUE
+
+    def on_data(self, _fd, _condition, connection):
+        if connection is not self.client:
+            return GLib.SOURCE_REMOVE
+        try:
+            data = connection.recv(16384)
+        except OSError:
+            data = b""
+        if not data:
+            self.drop_client()
+            return GLib.SOURCE_REMOVE
+        self.received += data
+        *lines, self.received = self.received.split(b"\n")
+        if len(self.received) > MAX_LINE:
+            log("dropping an overlong message")
+            self.received = b""
+        for line in lines:
+            if len(line) <= MAX_LINE:
+                self.handle_line(line)
+        return GLib.SOURCE_CONTINUE
+
+    def drop_client(self):
+        if self.client is not None:
+            self.client.close()
+            self.client = None
+            self.received = b""
+            # The app resends what's on Android when it connects again.
+            for notification_id in list(self.android_keys):
+                try:
+                    self.close(notification_id)
+                except GLib.Error:
+                    pass
+            self.android_ids.clear()
+            self.android_keys.clear()
+
+
+def main():
+    try:
+        Bridge()
+    except GLib.Error as error:
+        sys.exit(f"notify-bridge: can't start: {error.message}")
+    GLib.MainLoop().run()
+
+
+main()

@@ -964,6 +964,7 @@ xfconf-query -c xfce4-panel -p /panels/panel-2/autohide-behavior -s 0 2>/dev/nul
 
 /usr/local/bin/localdesktop-no-sandbox-entries
 /usr/local/bin/localdesktop-fonts &
+/usr/local/bin/localdesktop-notify-bridge &
 
 # Xfce opens links through its own preferred browser, not mimeapps.list, and ships Firefox as the
 # default. Brave may be installed later, so check each session; an existing file is the user's choice.
