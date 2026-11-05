@@ -1247,3 +1247,50 @@ User chose this next (shade jank, multi-display, rotation/fold check skipped for
 - Not tested: clicking an Android copy on the desktop, tapping a Linux copy on Android, a real Xfce session (xfce4-notifyd), the prompt's "No thanks", session restart clearing copies.
 - Mistake: I ran `service call notification 1` twice on the phone by accident while probing. It's AIDL's first method (cancelAllNotifications), which I'd expect to be refused for a missing package argument and limited to the caller's own package anyway; logcat shows nothing. Don't probe with service call.
 - Test notification from `cmd notification post` was left: tag bridgetest.
+
+## 2026-11-03 ~17:00 — RESUME HERE: controller input built; Game Mode showed a BLACK SCREEN in its last test (UNCOMMITTED)
+Committed today, unpushed (main is 9 ahead of fork/main): through 28ca86b, the notification bridge. Rewritten earlier today to remove private details; local backup branch backup/pre-private-scrub still has the old text: never push it.
+
+Controller work, uncommitted in the tree. Backup: ~/localdesktop-bench/pad-black-20261103/ (uncommitted.patch, ld-padtest). Installed APK: ~/localdesktop-bench/apks/dev-28ca86b-pad-1.apk.
+- patches/winit android/mod.rs: joystick motion becomes DeviceEvent::Motion (AXIS_* numbers), gamepad-source keys become DeviceEvent::Button (KEYCODE_*), so a controller no longer produces arrow keys or mouse events.
+- gamepad.rs: Controller state merged into the ring with the on-screen gamepad. Layout by position. Mode (Capture on a Switch Pro) tapped alone = Steam, 80 ms; Mode + Select (Minus) = Quick Access; Mode + other = Steam + it. release_controller on hide; ring reopened after a session ends. run.rs device_event; AppUserEvent::SteamTapEnded.
+- BUG FIXED on the way: gamepad.rs RING_MAGIC was 0x46424952, the ring holds 0x46494252, so the on-screen gamepad could never write to the ring. Probably why its STEAM button did nothing (ROADMAP 3.1). Not re-tested: the on-screen gamepad stays off unless gamepad-enabled exists.
+- No physical controller needed: scripts/device/ld-padtest (~/bin symlink) uses Android's `uinput` with the Pro Controller's ids (057e:2009), so Android applies its real key layout. Result: PASS for all buttons, triggers, D-pad keys, hat, sticks, chords, tap of Steam (81 ms), unplug with a button down. That proves Android -> app -> ring only.
+- Steam side: controller.txt shows "Steam Deck Controller" opened on /dev/hidraw16 (16:50), pad.log shows feature requests answered. So Steam has the device. Whether its UI reacts is NOT proven.
+
+OPEN, first thing next session: the user reports a BLACK SCREEN in Game Mode (reported around 16:59, during the visual test). No logs: the phone left adb right after, so the capture failed. Cause unknown, don't assume. What's known:
+- Game Mode was launched by me over ld-run at about 16:50, with Plasma's environment, from a build containing today's changes. Unknown: when it went black, or whether it ever drew. The user wasn't watching the first run and left and came back before the second, so the window was hidden in between.
+- During that first run, gamescope, steam and steamwebhelper were up and ld-run still answered, and the gamemode.log tail showed "create_swapchain: Surface already had a gamescope_swapchain! Warning" repeating.
+- Suspects, untested: (a) e69b74a hidden pacing / held feedback on return with gamescope in the chain; (b) 1db0447 first configure after first commit, which changed how every window starts; (c) launching from ld-run rather than the menu; (d) Steam just still loading. Game Mode has not been run on any build since these commits except this one, so this may be a regression from today.
+Next steps:
+1. Ask the user to retest by launching Game Mode from the app menu, without hiding the app. Grab logs at once: adb logcat -d, tmp/gamemode.log, Steam's logs/console-linux.txt. No screen capture.
+2. If it's black: bisect against a build before e69b74a (dev-e9edfcb-background-4.apk) and one before 1db0447 (dev-9c859af-hidden-3.apk). Check whether hide + return is what breaks it.
+3. Once it draws: rerun the visual test: ~/localdesktop-bench/pad-black-20261103 has ld-padtest; the sequence is D-pad right x4, Capture tap, B, Capture + Minus, B, with the user watching. Then ask to commit, with ROADMAP and docs/steam-deck-controller.md updated. Commit and push only when asked.
+Game Mode may still be running, and the phone may still be showing black: "Close desktop" in the notification (expand it first) ends it, and reopening starts Plasma.
+
+Still skipped by the user's choice: shade jank, multi-display, the rotation and fold check after 1db0447. Still untested from earlier: earbud switching; clicking or tapping mirrored notifications; the bridge on real Xfce. A "Bridge Android test" notification from `cmd notification post` may still be on the phone.
+
+## 2026-11-04 ~16:05 — RESUME HERE: Game Mode size: launcher sets no sizes; Steam still cut to 1920x1080 on large screens (UNCOMMITTED)
+User's call: acceptable stopping place, resume later. Nothing committed or pushed today; main still ends at 28ca86b, 9 ahead of fork/main.
+
+**APK built, NOT installed:** ~/localdesktop-bench/apks/dev-28ca86b-gamesize-1.apk (sha256 a36847c9deb495eb...), contains today's launcher plus the uncommitted controller work. Built after the phone left adb. The phone still has dev-28ca86b-pad-1 installed, plus the new launcher copied by hand into the guest, so the next app start puts the OLD launcher back (fixed 1920x1080 fallback) until this APK is installed. Install needs an on-phone Play Protect OK from the user. Tree diff backup: ~/localdesktop-bench/pad-black-20261103/uncommitted-20261104.patch.
+
+**Black screen (yesterday's open item): did not reproduce.** Menu launch ran clean for 6+ min. Home + return and lock + unlock both came back fine, and so did fold, unfold and rotation. Root cause not found, so don't call it fixed. One lead: `create_swapchain: Surface already had a gamescope_swapchain` appeared in both launches made over ld-run (yesterday's black one: 37; today's: 3 within ~1 min) and 0 times in menu launches. ld-run's environment lacks DISPLAY, XAUTHORITY and DBUS_SESSION_BUS_ADDRESS. Today's ld-run launch was not black, and it did lose touch (user), though it also had mismatched sizes. Test Game Mode from the menu, not ld-run.
+
+**Size change (user's decision, replaces the "largest 16:9" rule):** remove all size parameters and inherit the screen. localdesktop-gamemode no longer has -W -H -w -h, the xrandr/fit logic or LOCALDESKTOP_GAMEMODE_SIZE. It adds `--xwayland-count 2`, needed because with no flags Steam's X server stays at gamescope's 1280x720 (main.cpp: nested = initial output; WaylandBackend Init defaults to 720p). With 2 servers, steamcompmgr.cpp updates server 0 to the output size on change. Forcing -w 2316 -h 904 alone was rejected: only one posture fit, touch broke.
+
+Measured (window in physical px -> Steam's X server :0, user's verdict "better, usable", touch works):
+- Folded upright 904x2316 -> 903x2315, fits. Folded sideways 2316x904 -> 2315x903, fits.
+- Unfolded sideways 2176x1811 -> starts 2176x1811, then 1920x1080 about 15 s later. Doesn't fit.
+- Unfolded upright 1811x2176 -> 1811x1080. Doesn't fit.
+
+**OPEN, first thing next time: what cuts Steam to 1920x1080 unfolded.** The numbers fit a 1920x1080 request clamped by GAMESCOPE_XWAYLAND_MODE_CONTROL with allowSuperRes=false (steamcompmgr.cpp ~6033, min(w,output), min(h,output)). That's an inference, not observed: watch the atom (`DISPLAY=:0 xprop -root -spy GAMESCOPE_XWAYLAND_MODE_CONTROL`) and find who sets it. Folded doesn't get clamped, which the simple theory doesn't explain (2315 > 1920). Tried: removed `"GameResolutionGlobal" "1920x1080"` from Steam's userdata/<id>/config/localconfig.vdf with Steam stopped. Result: no change (user, and log). Backups: ~/localdesktop-bench/localconfig.vdf.before-gameresglobal-20261104, and <file>.before-gameresglobal on the phone. Not checked, because the phone left adb: whether Steam wrote the key back after that run. Check that first. Also seen in that last run: :1 went from 1280x720 to 1920x1080 at 16:01:08; unknown why, maybe a game launch.
+Bastion's own ResolutionOverride2 1920x1080 (app 107100) is the user's deliberate touch fix; left alone.
+
+**Other findings, not fixed:**
+- KWin has no Xwayland in the Plasma session: `kwin_xwl: /tmp/.X11-unix has no sticky bit` / `Failed to establish X11 socket`. /tmp/.X11-unix is drwx------; the session's umask is 0077, which likely explains it (not proven). So DISPLAY is empty in Plasma. Game Mode no longer depends on this, but X11 apps in Plasma would. Fix would be at session start (mode 1777), near the X1 cleanup in src/android/proot/launch.rs. Stale sockets X2-X13 from labwc tests also remain there.
+- Games on the second X server are UNTESTED: whether Steam launches them there and at what size, and touch in Bastion. They no longer get a forced 16:9, so Bastion needs a recheck.
+
+**Still to do from before:** controller visual test with the user watching (ld-padtest; D-pad right x4, Capture tap, B, Capture + Minus, B), then ask to commit with ROADMAP and docs/steam-deck-controller.md. docs/game-mode.md and ROADMAP.md are already updated for the size change, uncommitted.
+
+2026-11-05: user asked to install and commit, before the Steam-size and game tests above. Committed in two commits (controller input; Game Mode size), not pushed. The controller visual test is still not done, so its docs say what's proven and what isn't. Removing Steam's GameResolutionGlobal stays on the phone; whether Steam wrote it back is still unchecked.

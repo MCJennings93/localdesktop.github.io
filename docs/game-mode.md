@@ -22,12 +22,10 @@ reference throughout.
   glamor), shown out of order: vkcube shook, gears flashed. With the Turnip patch frames arrive as
   GPU buffers and play smoothly. gamescope then refused to start without a primary node, which the
   nested backend never uses; patch 0200 only asks for one when the backend is session-based (DRM).
-- **The game screen is the largest 16:9 that fits the display**, at its pixel density (2176x1224 on
-  a near-square foldable screen, 1920x1080 on a 20:9 phone). Games assume 16:9; given another shape some
-  draw a 16:9 picture inside it and then misplace touches and their cursor by the bars they added,
-  which nothing below the game can correct (Bastion was ~300 px low). Inside gamescope the touch
-  mapping itself is exact (measured within 1 px). Steam's per-game Game Resolution gives a game that
-  handles other shapes the whole display. `LOCALDESKTOP_GAMEMODE_SIZE=WxH` overrides the size.
+- **Screen size.** The launcher sets no sizes: gamescope's window takes the screen KWin gives it,
+  and `--xwayland-count 2` makes gamescope keep Steam's X server equal to that window through
+  rotations and folds. Games run on the second X server. With only one X server, Steam's screen
+  stays at the size fixed at launch (1280x720 with no flags).
 - **Touch.** gamescope's `--default-touch-mode 4` (passthrough) is for the Steam UI; Steam sets the
   per-game mode (`STEAM_TOUCH_CLICK_MODE` on gamescope's X root, Left click by default for games).
 - **Opening.** gamescope opens its window only once Steam draws, 10 s to a minute after the tap,
@@ -38,12 +36,18 @@ reference throughout.
 
 ## Not working yet
 
+- On screens larger than 1920x1080, Steam's X server is cut to a 1920x1080 request clamped to the
+  window (1920x1080 sideways, 1811x1080 upright on a 2176x1811 screen), so Steam doesn't fit. Smaller
+  screens fit exactly. The requester isn't known yet; removing Steam's saved `GameResolutionGlobal`
+  didn't change it.
 - The on-screen gamepad (`src/android/backend/wayland/gamepad.rs`) is off unless
   `/root/.config/localdesktop/gamepad-enabled` exists: it stopped being drawn while its controls
   still took touches, Steam's menu did not appear for its STEAM button, and touching it made the
   screen flash. See steam-deck-controller.md for its requirements.
 - Games that letterbox themselves at a resolution other than the game screen's shape misplace
-  touches (see above).
+  touches by their own bars, which nothing below the game can correct (Bastion was ~300 px low at
+  the display's shape). Steam's per-game Game Resolution works around it (1920x1080 for Bastion).
+  Not yet rechecked since the launcher stopped forcing 16:9.
 - Once, an instance stopped turning taps into clicks (the cursor moved, Xwayland got no button
   events); a fresh instance clicked. To trace it: start Game Mode with `WAYLAND_DEBUG=1` and look for
   `wl_touch.down` from KWin and `wl_pointer.button` sent to Xwayland in /tmp/gamemode.log.

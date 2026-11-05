@@ -69,7 +69,9 @@ Open:
      evdev sysfs.
    - **On-screen gamepad** (off by default). It stops drawing while still taking touches, its STEAM
      button doesn't open Steam's menu or the Quick Access Menu, and touching it flashes the screen.
-2. **Games at any resolution and aspect ratio.** Games that letterbox themselves (Bastion at
+2. **Games at any resolution and aspect ratio.** On screens larger than 1920x1080, Steam's own
+   screen is still cut to a clamped 1920x1080 request (requester unknown, see
+   [Game Mode](docs/game-mode.md)). Games that letterbox themselves (Bastion at
    non-16:9 sizes) misplace touch by their own bars. Options: per-game Game Resolution, windowed
    mode inside gamescope, a newer FNA.
 3. **Clicks stopped in one Game Mode instance.** The cursor moved but no button events arrived.
