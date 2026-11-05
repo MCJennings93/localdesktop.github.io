@@ -312,3 +312,50 @@ mod tests {
         );
     }
 }
+
+/// The shortest side a desktop gets, in logical pixels. Desktop programs have minimum widths that
+/// a phone's density can leave no room for: Chromium browsers stay at least 500 wide, whatever the
+/// window. A little over that, so they fit with their window's edges in view.
+pub const MIN_SHORT_SIDE: f64 = 516.0;
+
+/// The desktop's scale for a window: the display's density scale, lowered only as far as the window
+/// needs to give [`MIN_SHORT_SIDE`]. It goes by the short side so it stays the same when the
+/// display rotates, and rounds down to the 1/120 steps of `wp_fractional_scale_v1`. Never below 1x.
+pub fn desktop_scale(density_scale: f64, width: i32, height: i32) -> f64 {
+    let short_side = width.min(height) as f64;
+    if short_side <= 0.0 {
+        return density_scale.max(1.0);
+    }
+    let fit = (short_side / MIN_SHORT_SIDE * 120.0).floor() / 120.0;
+    density_scale.min(fit).max(1.0)
+}
+
+#[cfg(test)]
+mod desktop_scale_tests {
+    use super::desktop_scale;
+
+    #[test]
+    fn roomy_window_keeps_its_density_scale() {
+        assert_eq!(desktop_scale(2.625, 1812, 2176), 2.625);
+        assert_eq!(desktop_scale(2.625, 2176, 1812), 2.625);
+    }
+
+    #[test]
+    fn narrow_window_fits_the_minimum_in_both_orientations() {
+        let upright = desktop_scale(2.625, 904, 2316);
+        assert_eq!(upright, 1.75);
+        assert_eq!(upright, desktop_scale(2.625, 2316, 904));
+        assert!(904.0 / upright >= 516.0);
+    }
+
+    #[test]
+    fn never_below_one() {
+        assert_eq!(desktop_scale(2.0, 400, 800), 1.0);
+        assert_eq!(desktop_scale(0.5, 2000, 2000), 1.0);
+    }
+
+    #[test]
+    fn unknown_window_keeps_its_density_scale() {
+        assert_eq!(desktop_scale(2.625, 0, 0), 2.625);
+    }
+}

@@ -1312,3 +1312,13 @@ Installed 2026-11-05 09:17: dev-c31c69c, built from that commit (APK in ~/locald
 - The toml was changed for one WAYLAND_DEBUG capture and restored (diff clean). Copy: ~/localdesktop-bench/localdesktop.toml.before-wldebug-20261105.
 - Still separate: Steam cut to 1920x1080 unfolded.
 Then: ld-labwctest 8 runs PASS. User checked by eye in the fresh session: Plasma and Steam both fit, unfolded. Committed, not pushed. The installed dev-c31c69c-firstsize-1 has the same code as that commit. Not checked: a fresh start while folded. Next: Steam cut to 1920x1080 unfolded (read the 2026-11-04 RESUME HERE), then games on the second X server, then the controller visual test.
+2026-11-05: user checked folded by eye: Plasma and Steam both fit, so the size fix (3a6b94f) is confirmed unfolded and folded. Whether that was a fresh start while folded wasn't stated.
+
+2026-11-05 ~10:30 — Brave on narrow screens: desktop scale fix, committed, not pushed.
+- Symptom: folded and upright, Brave's window was 500 logical wide on a 344 screen, so the right side hung off. Chromium's minimum width is believed to be 500 (from memory, matches the measurement; not checked in its source).
+- User chose the shared fix over a Brave flag. config::desktop_scale: the density scale, lowered only if the short side would be under 516 logical, rounded down to 1/120. It uses the short side so rotation keeps the scale. Used by configure_output and both Resized paths.
+- Measured on the phone, folded upright: KWin 517x1323, Brave 517x1265, 1.75x. User: "looks good" (fit and comfort). 4 unit tests pass (run in Docker: rustc --test on the function, because the PC has no Rust).
+- Not measured on this build: unfolded (should stay 2.625x, covered by a unit test only). ld-firstsize now expects this rule; it was last run on this build only with the phone locked, which gave no result.
+- Side effect: any display whose short side is under 516 logical also gets smaller, e.g. a 1080-wide phone at 420 dpi goes from 2.625x to about 2.09x. Not tried on such a phone.
+- Installed: dev-3a6b94f-scale-1, same code as this commit.
+- Next is unchanged: Steam cut to 1920x1080 unfolded (2026-11-04 RESUME HERE), then games on the second X server, then the controller visual test.

@@ -19,7 +19,11 @@ sleep 20
 kwin=$(~/bin/ld-run "$PROBE" 20 | grep -E '^[0-9]+ [0-9]+$')
 read -r w h <<<"$(adb shell dumpsys window windows | grep -A40 "$PKG/android.app.NativeActivity" | grep -m1 -oE 'frame=\[0,0\]\[[0-9]+,[0-9]+\]' | sed -E 's/.*\]\[([0-9]+),([0-9]+)\]/\1 \2/')"
 density=$(adb shell wm density | tail -1 | grep -oE '[0-9]+$')
-want=$(awk -v w="$w" -v h="$h" -v d="$density" 'BEGIN { printf "%d %d", w * 160 / d + 0.5, h * 160 / d + 0.5 }')
+# The app's desktop_scale: the density scale, lowered if it leaves the short side under 516.
+want=$(awk -v w="$w" -v h="$h" -v d="$density" 'BEGIN {
+    s = d / 160; short = w < h ? w : h; fit = int(short / 516 * 120) / 120
+    if (fit < s) s = fit; if (s < 1) s = 1
+    printf "%d %d", w / s + 0.5, h / s + 0.5 }')
 echo "window ${w}x${h} at ${density} dpi: want KWin at $want, KWin has ${kwin:-nothing}"
 set -- $want $kwin
 if [ $# -eq 4 ] && [ $(( ${1} - ${3} )) -ge -1 ] && [ $(( ${1} - ${3} )) -le 1 ] && [ $(( ${2} - ${4} )) -ge -1 ] && [ $(( ${2} - ${4} )) -le 1 ]; then

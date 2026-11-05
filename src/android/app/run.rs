@@ -35,7 +35,8 @@ fn configure_output(backend: &mut crate::android::backend::wayland::WaylandBacke
     let size = (window_size.w, window_size.h);
     // Not `winit.scale_factor()`: that reads `AConfiguration`, which still reports the 160 dpi
     // default on the first launch and only becomes accurate after a configuration change.
-    let guest_scale_factor = ndk::scale_factor(&backend.android_app);
+    let guest_scale_factor =
+        config::desktop_scale(ndk::scale_factor(&backend.android_app), size.0, size.1);
     backend.guest_scale_factor = guest_scale_factor;
     backend.refresh_millihz = ndk::refresh_rate_millihz(&backend.android_app);
 

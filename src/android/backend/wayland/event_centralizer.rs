@@ -8,6 +8,7 @@ use crate::android::backend::wayland::{
     TouchMode, WaylandBackend,
 };
 use crate::android::utils::ndk;
+use crate::core::config;
 use smithay::backend::input::InputEvent;
 use smithay::utils::{Physical, Size};
 use winit::dpi::PhysicalPosition;
@@ -85,7 +86,8 @@ pub fn centralize(event: WindowEvent, backend: &mut WaylandBackend) -> Centraliz
     return match event {
         WindowEvent::Resized(size) => {
             let (w, h): (i32, i32) = size.into();
-            backend.guest_scale_factor = ndk::scale_factor(&backend.android_app);
+            backend.guest_scale_factor =
+                config::desktop_scale(ndk::scale_factor(&backend.android_app), w, h);
 
             CentralizedEvent::Resized {
                 size: (w, h).into(),
@@ -93,7 +95,6 @@ pub fn centralize(event: WindowEvent, backend: &mut WaylandBackend) -> Centraliz
             }
         }
         WindowEvent::ScaleFactorChanged { .. } => {
-            backend.guest_scale_factor = ndk::scale_factor(&backend.android_app);
             let (w, h): (i32, i32) = backend
                 .graphic_renderer
                 .as_ref()
@@ -101,6 +102,8 @@ pub fn centralize(event: WindowEvent, backend: &mut WaylandBackend) -> Centraliz
                 .window()
                 .inner_size()
                 .into();
+            backend.guest_scale_factor =
+                config::desktop_scale(ndk::scale_factor(&backend.android_app), w, h);
             CentralizedEvent::Resized {
                 size: (w, h).into(),
                 guest_scale_factor: backend.guest_scale_factor,
