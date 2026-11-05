@@ -36,6 +36,23 @@ pub(crate) use crate::icon::NoIcon as PlatformIcon;
 
 static HAS_FOCUS: AtomicBool = AtomicBool::new(true);
 
+// AINPUT_SOURCE_CLASS_JOYSTICK, and the bit of AINPUT_SOURCE_GAMEPAD that isn't its button class.
+// A controller's source combines several (keyboard, gamepad and joystick), so test the bits.
+const SOURCE_CLASS_JOYSTICK: u32 = 0x10;
+const SOURCE_GAMEPAD_BIT: u32 = 0x400;
+const GAMEPAD_AXES: [input::Axis; 10] = [
+    input::Axis::X,
+    input::Axis::Y,
+    input::Axis::Z,
+    input::Axis::Rz,
+    input::Axis::Ltrigger,
+    input::Axis::Rtrigger,
+    input::Axis::Brake,
+    input::Axis::Gas,
+    input::Axis::HatX,
+    input::Axis::HatY,
+];
+
 /// Returns the minimum `Option<Duration>`, taking into account that `None`
 /// equates to an infinite timeout, not a zero timeout (so can't just use
 /// `Option::min`)
@@ -375,6 +392,44 @@ impl<T: 'static> EventLoop<T> {
     {
         let mut input_status = InputStatus::Handled;
         match event {
+            // A controller's sticks, triggers and hat, as raw axes (Android's AXIS_* numbers).
+            InputEvent::MotionEvent(motion_event)
+                if u32::from(motion_event.source()) & SOURCE_CLASS_JOYSTICK != 0 =>
+            {
+                let device_id = event::DeviceId(DeviceId(motion_event.device_id()));
+                let pointer = motion_event.pointer_at_index(motion_event.pointer_index());
+                for axis in GAMEPAD_AXES {
+                    callback(
+                        Event::DeviceEvent {
+                            device_id,
+                            event: event::DeviceEvent::Motion {
+                                axis: u32::from(axis),
+                                value: pointer.axis_value(axis) as f64,
+                            },
+                        },
+                        self.window_target(),
+                    );
+                }
+            },
+            // A controller's buttons, as Android's KEYCODE_* numbers. Android would otherwise turn
+            // these into arrow keys and the like.
+            InputEvent::KeyEvent(key) if u32::from(key.source()) & SOURCE_GAMEPAD_BIT != 0 => {
+                if key.repeat_count() == 0 {
+                    callback(
+                        Event::DeviceEvent {
+                            device_id: event::DeviceId(DeviceId(key.device_id())),
+                            event: event::DeviceEvent::Button {
+                                button: u32::from(key.key_code()),
+                                state: match key.action() {
+                                    KeyAction::Down => event::ElementState::Pressed,
+                                    _ => event::ElementState::Released,
+                                },
+                            },
+                        },
+                        self.window_target(),
+                    );
+                }
+            },
             InputEvent::MotionEvent(motion_event) => {
                 // Get the tool type of the primary pointer
                 let pointer = motion_event.pointer_at_index(motion_event.pointer_index());

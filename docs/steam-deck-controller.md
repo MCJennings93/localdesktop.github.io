@@ -57,9 +57,20 @@ On the PC, the x86-64 build was checked end to end in Debian bullseye: a test pr
 trigger past half → L2 `0x02`, Quick Access → high `0x40000`, d-pad up → `0x100`, sticks with
 the Deck's Y sign).
 
+A controller paired with Android joins the same ring: winit reports its axes and buttons as device
+events, so it no longer produces arrow keys or mouse motion, and `gamepad.rs` merges it with the
+on-screen gamepad by position. Mode (Capture on a Switch Pro) tapped alone is the Steam button for
+80 ms, Mode + Select (Minus) is Quick Access, and Mode + another button is Steam plus that button.
+
+`ld-padtest` (`scripts/device`) needs no physical controller. Android's `uinput` tool creates a
+virtual one with a Switch Pro Controller's ids, so Android applies its real key layout, and the
+test reads the ring. It passes for all buttons, triggers, the d-pad, sticks, chords, the Steam tap
+and unplugging with a button down. That covers Android to the ring only.
+
 ## Next
 
-1. Phone: Steam lists a Steam Deck controller; buttons work in Big Picture.
+1. Phone: see Steam's UI react to a controller, with someone watching, then try a real controller.
+   Steam already opens the emulated controller on `/dev/hidraw16`.
 2. Games: x86-64 libfakeinput in the FEX rootfs and the evdev sysfs, so Bastion sees Steam's
    virtual pad.
 3. Touch controls drawn by the app's compositor, writing the ring; then Steam's touch controller

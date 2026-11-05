@@ -21,7 +21,7 @@ use crate::core::config;
 use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
 use smithay::utils::Transform;
 use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
+use winit::event::{DeviceEvent, DeviceId, ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::platform::android::activity::AndroidApp;
 use winit::window::WindowId;
@@ -159,7 +159,9 @@ impl ApplicationHandler<AppUserEvent> for PolarBearApp {
             }
             AppUserEvent::WaylandReady => dispatch_clients(backend),
             AppUserEvent::Vsync => on_vsync(backend),
+            AppUserEvent::SteamTapEnded => backend.gamepad.end_steam_tap(),
             AppUserEvent::SessionEnded { early } => {
+                backend.gamepad.session_ended();
                 // Restart if it's in view, unless it just died at once and would keep doing so.
                 // Otherwise the next resume does it.
                 let visible = backend.graphic_renderer.is_some();
@@ -173,6 +175,26 @@ impl ApplicationHandler<AppUserEvent> for PolarBearApp {
                     start_session(self.frontend.android_app.clone());
                 }
             }
+        }
+    }
+
+    fn device_event(&mut self, _event_loop: &ActiveEventLoop, _device: DeviceId, event: DeviceEvent) {
+        let PolarBearBackend::Wayland(backend) = &mut self.backend else {
+            return;
+        };
+        match event {
+            DeviceEvent::Motion { axis, value } => backend.gamepad.controller_axis(axis, value),
+            DeviceEvent::Button { button, state } => {
+                let pressed = state == ElementState::Pressed;
+                if let Some(delay) = backend.gamepad.controller_button(button, pressed) {
+                    let proxy = self.frontend.proxy.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(delay);
+                        let _ = proxy.send_event(AppUserEvent::SteamTapEnded);
+                    });
+                }
+            }
+            _ => {}
         }
     }
 

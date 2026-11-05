@@ -21,6 +21,8 @@ pub enum AppUserEvent {
     Vsync,
     /// The desktop session's process ended; `early` if it hadn't been up for long.
     SessionEnded { early: bool },
+    /// A physical controller's tap of the Steam button has lasted long enough.
+    SteamTapEnded,
 }
 
 #[derive(Clone, Copy, Debug)]

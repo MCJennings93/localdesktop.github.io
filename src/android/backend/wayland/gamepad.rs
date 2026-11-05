@@ -1,7 +1,13 @@
-//! The on-screen gamepad: Steam Deck controls drawn over Game Mode, whose touches drive the
-//! emulated Steam Deck controller (`/usr/local/bin/localdesktop-pad` in the guest, served to
-//! Steam by libfakeinput) instead of reaching the session.
+//! What drives the emulated Steam Deck controller (`/usr/local/bin/localdesktop-pad` in the guest,
+//! served to Steam by libfakeinput): physical controllers paired with Android, and the on-screen
+//! gamepad, whose touches go to it instead of reaching the session. Both write the ring together.
 //!
+//! A physical controller's buttons are the Deck's by position. Android keeps a controller's Home
+//! button for itself, so the Steam button is its Mode button (Capture on a Switch Pro Controller).
+//! Tapped alone it's a tap of Steam; held with Select (Minus) it's Quick Access; held with another
+//! button it's Steam with that button, for Steam's chords.
+//!
+//! The on-screen gamepad is Steam Deck controls drawn over Game Mode.
 //! It is shown only while Game Mode runs: `localdesktop-gamemode` writes gamescope's pid to
 //! `/run/localdesktop-pad/gamemode`. A toggle at the top of the screen hides and shows the
 //! controls (touches then go to the game), and the choice is kept in
@@ -28,7 +34,7 @@ use winit::event::{Touch, TouchPhase};
 /// and 8 axes, little-endian.
 const SNAPSHOT_SEQ: u64 = 32;
 const SNAPSHOT_BUTTONS: u64 = 40;
-const RING_MAGIC: u32 = 0x4642_4952;
+const RING_MAGIC: u32 = 0x4649_4252;
 
 // Snapshot button bits (libfakeinput's kSnapshotButtons, Quick Access at 11).
 const A: u32 = 0;
@@ -87,7 +93,92 @@ struct Held {
     origin: (f64, f64),
 }
 
+/// How long a tap of the Steam button stays down: long enough for libfakeinput's reports, every 4 ms.
+const STEAM_TAP: Duration = Duration::from_millis(80);
+
+// Android's KEYCODE_* and AXIS_* numbers.
+const KEY_DPAD_UP: u32 = 19;
+const KEY_DPAD_DOWN: u32 = 20;
+const KEY_DPAD_LEFT: u32 = 21;
+const KEY_DPAD_RIGHT: u32 = 22;
+const KEY_A: u32 = 96;
+const KEY_B: u32 = 97;
+const KEY_X: u32 = 99;
+const KEY_Y: u32 = 100;
+const KEY_L1: u32 = 102;
+const KEY_R1: u32 = 103;
+const KEY_L2: u32 = 104;
+const KEY_R2: u32 = 105;
+const KEY_THUMBL: u32 = 106;
+const KEY_THUMBR: u32 = 107;
+const KEY_START: u32 = 108;
+const KEY_SELECT: u32 = 109;
+const KEY_MODE: u32 = 110;
+const AXIS_X: u32 = 0;
+const AXIS_Y: u32 = 1;
+const AXIS_Z: u32 = 11;
+const AXIS_RZ: u32 = 14;
+const AXIS_HAT_X: u32 = 15;
+const AXIS_HAT_Y: u32 = 16;
+const AXIS_LTRIGGER: u32 = 17;
+const AXIS_RTRIGGER: u32 = 18;
+const AXIS_GAS: u32 = 22;
+const AXIS_BRAKE: u32 = 23;
+
+/// A physical controller's state, as Android reports it.
+#[derive(Default)]
+struct Controller {
+    buttons: u32,
+    /// Left x, y, right x, y.
+    sticks: [f64; 4],
+    hat: (f64, f64),
+    /// (trigger axis, the other trigger axis, digital): some report one axis, some the other.
+    left_trigger: (f64, f64, bool),
+    right_trigger: (f64, f64, bool),
+    /// D-pad keys held: up, down, left, right.
+    dpad: [bool; 4],
+    mode_held: bool,
+    /// Another button went down while Mode was held, so releasing Mode isn't a tap.
+    mode_used: bool,
+}
+
+impl Controller {
+    /// In the ring's terms, as `Gamepad::axes` is.
+    fn axes(&self) -> [i16; 8] {
+        let stick = |value: f64| (value.clamp(-1.0, 1.0) * 32767.0) as i16;
+        let trigger = |(a, b, digital): (f64, f64, bool)| {
+            if digital {
+                255
+            } else {
+                (a.max(b).clamp(0.0, 1.0) * 255.0) as i16
+            }
+        };
+        let hat = |value: f64, minus: bool, plus: bool| {
+            if minus || value <= -0.5 {
+                -1
+            } else if plus || value >= 0.5 {
+                1
+            } else {
+                0
+            }
+        };
+        let mut axes = [0; 8];
+        axes[LX] = stick(self.sticks[0]);
+        axes[LY] = stick(self.sticks[1]);
+        axes[RX] = stick(self.sticks[2]);
+        axes[RY] = stick(self.sticks[3]);
+        axes[LT] = trigger(self.left_trigger);
+        axes[RT] = trigger(self.right_trigger);
+        axes[HX] = hat(self.hat.0, self.dpad[2], self.dpad[3]);
+        axes[HY] = hat(self.hat.1, self.dpad[0], self.dpad[1]);
+        axes
+    }
+}
+
 pub struct Gamepad {
+    controller: Controller,
+    /// What was last written for the controller, to skip writes for events that changed nothing.
+    controller_axes: [i16; 8],
     size: (i32, i32),
     controls: Vec<Control>,
     textures: Option<Textures>,
@@ -111,6 +202,8 @@ fn guest(path: &str) -> PathBuf {
 impl Gamepad {
     pub fn new() -> Self {
         Gamepad {
+            controller: Controller::default(),
+            controller_axes: [0; 8],
             size: (0, 0),
             controls: Vec::new(),
             textures: None,
@@ -154,6 +247,113 @@ impl Gamepad {
                 self.release_all();
             }
         }
+    }
+
+    /// A physical controller's button, by Android keycode. Returns a delay if a tap of Steam began:
+    /// [`Self::end_steam_tap`] ends it after that.
+    pub fn controller_button(&mut self, keycode: u32, pressed: bool) -> Option<Duration> {
+        let controller = &mut self.controller;
+        let mut tap = None;
+        let bit = match keycode {
+            KEY_MODE => {
+                if pressed {
+                    controller.mode_held = true;
+                    controller.mode_used = false;
+                } else {
+                    controller.mode_held = false;
+                    controller.buttons &= !((1 << STEAM) | (1 << QAM));
+                    if !controller.mode_used {
+                        controller.buttons |= 1 << STEAM;
+                        tap = Some(STEAM_TAP);
+                    }
+                }
+                None
+            }
+            KEY_A => Some(A),
+            KEY_B => Some(B),
+            KEY_X => Some(X),
+            KEY_Y => Some(Y),
+            KEY_L1 => Some(L1),
+            KEY_R1 => Some(R1),
+            KEY_THUMBL => Some(L3),
+            KEY_THUMBR => Some(R3),
+            KEY_START => Some(MENU),
+            KEY_SELECT => Some(VIEW),
+            KEY_L2 => {
+                controller.left_trigger.2 = pressed;
+                None
+            }
+            KEY_R2 => {
+                controller.right_trigger.2 = pressed;
+                None
+            }
+            KEY_DPAD_UP | KEY_DPAD_DOWN | KEY_DPAD_LEFT | KEY_DPAD_RIGHT => {
+                controller.dpad[(keycode - KEY_DPAD_UP) as usize] = pressed;
+                None
+            }
+            _ => return None,
+        };
+        if pressed && keycode != KEY_MODE && controller.mode_held {
+            controller.mode_used = true;
+            if keycode != KEY_SELECT {
+                controller.buttons |= 1 << STEAM;
+            }
+        }
+        if let Some(bit) = bit {
+            if bit == VIEW && !pressed {
+                controller.buttons &= !((1 << VIEW) | (1 << QAM));
+            } else if bit == VIEW && controller.mode_held {
+                controller.buttons |= 1 << QAM;
+            } else if pressed {
+                controller.buttons |= 1 << bit;
+            } else {
+                controller.buttons &= !(1 << bit);
+            }
+        }
+        self.publish();
+        tap
+    }
+
+    pub fn end_steam_tap(&mut self) {
+        if !self.controller.mode_held {
+            self.controller.buttons &= !(1 << STEAM);
+            self.publish();
+        }
+    }
+
+    /// A physical controller's axis, by Android's number.
+    pub fn controller_axis(&mut self, axis: u32, value: f64) {
+        let controller = &mut self.controller;
+        match axis {
+            AXIS_X => controller.sticks[0] = value,
+            AXIS_Y => controller.sticks[1] = value,
+            AXIS_Z => controller.sticks[2] = value,
+            AXIS_RZ => controller.sticks[3] = value,
+            AXIS_HAT_X => controller.hat.0 = value,
+            AXIS_HAT_Y => controller.hat.1 = value,
+            AXIS_LTRIGGER => controller.left_trigger.0 = value,
+            AXIS_BRAKE => controller.left_trigger.1 = value,
+            AXIS_RTRIGGER => controller.right_trigger.0 = value,
+            AXIS_GAS => controller.right_trigger.1 = value,
+            _ => return,
+        }
+        let axes = controller.axes();
+        if axes != self.controller_axes {
+            self.controller_axes = axes;
+            self.publish();
+        }
+    }
+
+    /// The window was hidden, and a release won't reach us: don't leave anything held.
+    pub fn release_controller(&mut self) {
+        self.controller = Controller::default();
+        self.controller_axes = [0; 8];
+        self.publish();
+    }
+
+    /// A new session makes a new ring.
+    pub fn session_ended(&mut self) {
+        self.ring = None;
     }
 
     fn lay_out(&mut self, w: i32, h: i32) {
@@ -335,8 +535,11 @@ impl Gamepad {
         let _ = ring.read_at(&mut word, SNAPSHOT_SEQ);
         let seq = u64::from_le_bytes(word);
         let mut state = Vec::with_capacity(20);
-        state.extend_from_slice(&self.buttons.to_le_bytes());
-        for axis in self.axes {
+        state.extend_from_slice(&(self.buttons | self.controller.buttons).to_le_bytes());
+        let controller_axes = self.controller.axes();
+        for (touch, controller) in self.axes.into_iter().zip(controller_axes) {
+            // A physical controller wins over the on-screen one on an axis both are moving.
+            let axis = if controller != 0 { controller } else { touch };
             state.extend_from_slice(&axis.to_le_bytes());
         }
         let _ = ring.write_at(&(seq + 1).to_le_bytes(), SNAPSHOT_SEQ);

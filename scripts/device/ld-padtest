@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""Does a controller paired with Android drive the emulated Steam Deck controller?
+
+Needs no physical controller: Android's `uinput` tool creates a virtual one with a Switch Pro
+Controller's ids, so Android applies its real key layout. It presses each control and reads the ring
+that Steam's libfakeinput reads. The app must be in the foreground, with the session up.
+
+Usage: ld-padtest
+"""
+import json, os, re, subprocess, sys, time
+
+RUN = os.path.expanduser("~/bin/ld-run")
+EV_SYN, EV_KEY, EV_ABS = 0, 1, 3
+# The kernel codes hid-nintendo uses, which /system/usr/keylayout/Vendor_057e_Product_2009.kl maps.
+BTN = dict(A=0x130, B=0x131, Y=0x133, X=0x134, L=0x136, R=0x137, ZL=0x138, ZR=0x139, MINUS=0x13a, PLUS=0x13b,
+           CAPTURE=0x135, LS=0x13d, RS=0x13e, UP=0x220, DOWN=0x221, LEFT=0x222, RIGHT=0x223)
+ABS = dict(LX=0, LY=1, RX=3, RY=4, HX=0x10, HY=0x11)
+
+
+WATCH = """python3 -c '
+import struct, time
+f = open("/run/localdesktop-pad/fakeinput-rings/ring0", "rb", buffering=0)
+start, down, held = time.time(), None, None
+while time.time() - start < 6:
+    f.seek(40)
+    pressed = struct.unpack("<I", f.read(4))[0] & (1 << 10)
+    now = time.time()
+    if pressed and down is None:
+        down = now
+    elif not pressed and down is not None and held is None:
+        held = now - down
+    time.sleep(0.002)
+print("steam held %d ms" % (held * 1000) if held else "steam never held")
+'"""
+
+
+def info(low, high):
+    return dict(value=0, minimum=low, maximum=high, fuzz=0, flat=0, resolution=0)
+
+
+class Pad:
+    def __init__(self):
+        self.p = subprocess.Popen(["adb", "shell", "uinput", "-"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL)
+        self.send(dict(
+            id=1, command="register", name="ld-padtest pad", vid=0x057e, pid=0x2009, bus="usb",
+            configuration=[dict(type=100, data=[EV_KEY, EV_ABS]), dict(type=101, data=list(BTN.values())),
+                           dict(type=103, data=list(ABS.values()))],
+            abs_info=[dict(code=code, info=info(-1, 1) if name in ("HX", "HY") else info(-32767, 32767))
+                      for name, code in ABS.items()]))
+        time.sleep(2)
+
+    def send(self, message):
+        self.p.stdin.write(json.dumps(message).encode() + b"\n")
+        self.p.stdin.flush()
+
+    def event(self, *triples):
+        events = []
+        for kind, code, value in triples:
+            events += [kind, code, value]
+        self.send(dict(id=1, command="inject", events=events + [EV_SYN, 0, 0]))
+
+    def key(self, name, value):
+        self.event((EV_KEY, BTN[name], value))
+
+    def axis(self, name, value):
+        self.event((EV_ABS, ABS[name], value))
+
+    def close(self):
+        self.p.stdin.close()
+        self.p.wait(timeout=5)
+
+
+def state():
+    out = subprocess.run([RUN, "localdesktop-pad state", "10"], capture_output=True, text=True).stdout
+    buttons = re.search(r"buttons: (.*)", out).group(1).split()
+    axes = json.loads(re.search(r"axes: (\[.*\])", out).group(1))
+    return [] if buttons == ["-"] else buttons, axes
+
+
+failures = []
+
+
+def check(name, want_buttons=(), **want_axes):
+    time.sleep(0.25)
+    buttons, axes = state()
+    names = dict(LX=0, LY=1, RX=2, RY=3, RT=4, LT=5, HX=6, HY=7)
+    want = [0] * 8
+    for axis, value in want_axes.items():
+        want[names[axis]] = value
+    ok = sorted(buttons) == sorted(want_buttons) and all(abs(a - b) <= 2 for a, b in zip(axes, want))
+    print(("PASS " if ok else "FAIL ") + name + ("" if ok else f"  got {buttons} {axes}"), flush=True)
+    if not ok:
+        failures.append(name)
+
+
+def main():
+    subprocess.run(["adb", "shell", "am start -n io.github.localdesktop/android.app.NativeActivity"], capture_output=True)
+    time.sleep(2)
+    top = subprocess.run(["adb", "shell", "dumpsys activity activities | grep -m1 topResumedActivity"], capture_output=True, text=True).stdout
+    if "io.github.localdesktop" not in top:
+        sys.exit("the app isn't in the foreground (a lock screen?)")
+    pad = Pad()
+    try:
+        check("nothing held to start with")
+        for name, deck in [("A", "A"), ("B", "B"), ("X", "X"), ("Y", "Y"), ("L", "L1"), ("R", "R1"), ("PLUS", "MENU"),
+                           ("MINUS", "VIEW"), ("LS", "L3"), ("RS", "R3")]:
+            pad.key(name, 1)
+            check(f"{name} is the Deck's {deck}", [deck])
+            pad.key(name, 0)
+            check(f"{name} released", [])
+        pad.key("ZL", 1); check("ZL is the left trigger, fully", LT=255); pad.key("ZL", 0)
+        pad.key("ZR", 1); check("ZR is the right trigger, fully", RT=255); pad.key("ZR", 0)
+        for name, axes in [("UP", dict(HY=-1)), ("DOWN", dict(HY=1)), ("LEFT", dict(HX=-1)), ("RIGHT", dict(HX=1))]:
+            pad.key(name, 1); check(f"D-pad {name} keys", **axes); pad.key(name, 0)
+        pad.axis("HX", 1); check("hat right", HX=1); pad.axis("HX", 0)
+        pad.axis("HY", -1); check("hat up", HY=-1); pad.axis("HY", 0)
+        pad.axis("LX", 32767); pad.axis("LY", -16384); check("left stick", LX=32767, LY=-16384)
+        pad.axis("LX", 0); pad.axis("LY", 0); check("left stick centred")
+        pad.axis("RX", -32767); pad.axis("RY", 32767); check("right stick", RX=-32767, RY=32767)
+        pad.axis("RX", 0); pad.axis("RY", 0); check("right stick centred")
+        pad.key("A", 1); pad.axis("LX", 32767); check("a button and a stick together", ["A"], LX=32767)
+        pad.key("A", 0); pad.axis("LX", 0)
+        pad.key("CAPTURE", 1); check("Capture held alone holds nothing yet")
+        pad.key("CAPTURE", 0)
+        time.sleep(0.3); check("Capture's tap of Steam is over")
+        pad.key("CAPTURE", 1); pad.key("MINUS", 1); check("Capture + Minus is Quick Access", ["QAM"])
+        pad.key("MINUS", 0); pad.key("CAPTURE", 0); time.sleep(0.2); check("released, with no tap of Steam after it")
+        pad.key("CAPTURE", 1); pad.key("A", 1); check("Capture + A is Steam + A", ["STEAM", "A"])
+        pad.key("A", 0); pad.key("CAPTURE", 0); check("released")
+        # A tap of Steam lasts 80 ms, too short for a poll over adb, so watch the ring from inside.
+        watch = subprocess.Popen([RUN, WATCH, "15"], stdout=subprocess.PIPE, text=True)
+        time.sleep(4)
+        pad.key("CAPTURE", 1); time.sleep(0.05); pad.key("CAPTURE", 0)
+        out = watch.communicate(timeout=20)[0]
+        tap = re.search(r"steam held (\d+) ms", out)
+        ok = tap is not None and 40 <= int(tap.group(1)) <= 300
+        print(("PASS " if ok else "FAIL ") + f"tapping Capture taps Steam  [{out.splitlines()[0] if out else 'no output'}]", flush=True)
+        if not ok:
+            failures.append("tap")
+        pad.key("A", 1); time.sleep(0.2); pad.close(); time.sleep(1.5)
+        check("a controller unplugged with a button down doesn't leave it held")
+    finally:
+        if pad.p.poll() is None:
+            pad.p.kill()
+    print("RESULT:", f"FAIL ({len(failures)})" if failures else "PASS")
+    sys.exit(bool(failures))
+
+
+main()

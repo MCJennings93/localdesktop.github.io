@@ -580,6 +580,7 @@ pub fn dispatch_clients(backend: &mut WaylandBackend) {
 pub fn window_hidden(backend: &mut WaylandBackend) {
     backend.graphic_renderer = None;
     backend.compositor.state.hold_feedback = true;
+    backend.gamepad.release_controller();
     // A client may already be waiting on a frame callback, with no commit to come.
     schedule_frame(backend);
 }

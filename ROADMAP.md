@@ -61,9 +61,10 @@ Open:
 
 ### 3. Steam and games
 1. **Controller input:**
-   - **Physical controllers.** A controller paired with Android (e.g. a Switch Pro Controller)
-     becomes the Steam Deck controller Steam reads: gamepad events from winit instead of keys and
-     mouse motion, merged into the pad ring.
+   - **Physical controllers.** Built: a controller paired with Android (e.g. a Switch Pro
+     Controller) becomes the Steam Deck controller Steam reads, merged into the pad ring.
+     `ld-padtest` passes from Android to the ring. Still to check: Steam's UI reacting to it, with
+     someone watching, and a real controller.
    - **Games see Steam Input's virtual pad.** Needs x86-64 libfakeinput in the FEX rootfs, plus
      evdev sysfs.
    - **On-screen gamepad** (off by default). It stops drawing while still taking touches, its STEAM
