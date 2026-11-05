@@ -1294,3 +1294,21 @@ Bastion's own ResolutionOverride2 1920x1080 (app 107100) is the user's deliberat
 **Still to do from before:** controller visual test with the user watching (ld-padtest; D-pad right x4, Capture tap, B, Capture + Minus, B), then ask to commit with ROADMAP and docs/steam-deck-controller.md. docs/game-mode.md and ROADMAP.md are already updated for the size change, uncommitted.
 
 2026-11-05: user asked to install and commit, before the Steam-size and game tests above. Committed in two commits (controller input; Game Mode size), not pushed. The controller visual test is still not done, so its docs say what's proven and what isn't. Removing Steam's GameResolutionGlobal stays on the phone; whether Steam wrote it back is still unchecked.
+Installed 2026-11-05 09:17: dev-c31c69c, built from that commit (APK in ~/localdesktop-bench/apks/). This replaces the "NOT installed" warning above. dev-28ca86b-gamesize-1 was never installed.
+
+2026-11-05 ~09:30 — Steam window oversized on one launch (dev-c31c69c, new launcher). NOT fixed, 1 of 2 launches.
+- Launch 1, 09:22:24, about 33 s after KWin started (session started by opening the app after the install), unfolded and sideways: user saw Steam cut off at the bottom right. KWin: gamescope window 1024x768 logical, fs=true, on an 829x690 screen; KWin itself reported the screen correctly. gamescope log "Updating mode" #0: 3072x2130, 3072x2304, 2688x2016 (1024x768 x3 and x2.625), then 1920x1080. Rotating didn't heal it: after 1811x2176 upright, returning sideways gave 2688x2016 again.
+- Launch 2, 09:28:29, same session and posture, no rotation, after --shutdown: window 828x689, fits (user: "looks right"). Mode 2176x1811, then 1920x1080.
+- Cause unknown. Leads, untested: (a) launched too soon after session start: KWin starts at scale 3 ("direct KWin on wayland-0, scale 3") and 1024x768 is thought to be KWin's default nested output size (from memory, not checked in its source); (b) the host output changed at 09:22:54-57 (logcat smithay change_current_state), around when the window opened, so rotating during window creation may be the trigger. Whether the old launcher could do this too is unknown; its fixed -W/-H may have hidden it.
+- Test to separate them: restart the app, tap Steam straight away without rotating, read the window with /tmp/ld-geo.sh (KWin script, needs plasmashell's DBUS_SESSION_BUS_ADDRESS). Then a settled session, rotating while Steam opens.
+- Also still: steam's mode 1920x1080 unfolded (that clamp is separate; see above).
+
+2026-11-05 ~09:50 — Wrong size at session start: ROOT CAUSE FOUND, fix installed, UNCOMMITTED. This replaces the leads in the ~09:30 entry.
+- Symptom: after a fresh start with no rotation, KWin's screen stayed 1024x768 (its default; the launch has no --width/--height), so Plasma and Steam were both wrong until a rotation or fold. Reproduced on demand; not related to the launcher or to how soon Steam opens.
+- Cause: nested KWin sends set_fullscreen before its first commit. smithay's default fullscreen_request answers with send_configure() carrying no size. WAYLAND_DEBUG showed `xdg_toplevel.configure(0, 0, [])`. Since 1db0447 the sized first configure is only sent on first commit if none was sent yet, so it got skipped. Regression from 1db0447.
+- Fix: compositor.rs overrides fullscreen_request and maximize_request (same default): nothing before the first commit, sized configure after it.
+- Test: scripts/device/ld-firstsize. dev-c31c69c FAIL (want 829 690, has 1024 768); dev-c31c69c-firstsize-1 PASS 3 of 3. ld-labwctest 3 runs PASS (default is 8, and it was a race, so 3 proves less).
+- Installed: dev-c31c69c-firstsize-1, APK in ~/localdesktop-bench/apks/. Not yet checked by eye or in other postures. Commit needs the user's OK.
+- The toml was changed for one WAYLAND_DEBUG capture and restored (diff clean). Copy: ~/localdesktop-bench/localdesktop.toml.before-wldebug-20261105.
+- Still separate: Steam cut to 1920x1080 unfolded.
+Then: ld-labwctest 8 runs PASS. User checked by eye in the fresh session: Plasma and Steam both fit, unfolded. Committed, not pushed. The installed dev-c31c69c-firstsize-1 has the same code as that commit. Not checked: a fresh start while folded. Next: Steam cut to 1920x1080 unfolded (read the 2026-11-04 RESUME HERE), then games on the second X server, then the controller visual test.

@@ -150,6 +150,26 @@ impl XdgShellHandler for State {
     // The first configure waits for the surface's first commit, see `configure_on_initial_commit`.
     fn new_toplevel(&mut self, _surface: ToplevelSurface) {}
 
+    // Smithay's defaults answer these at once with a configure carrying no size. Before the first
+    // commit that would also use up the first configure, so the client never learns its size until
+    // the display next changes: nested KWin, which asks for fullscreen first, stayed at its default
+    // 1024x768. Every toplevel here already fills the window, so each gets that size again.
+    fn fullscreen_request(
+        &mut self,
+        surface: ToplevelSurface,
+        _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+    ) {
+        if surface.is_initial_configure_sent() {
+            self.configure_toplevel(&surface);
+        }
+    }
+
+    fn maximize_request(&mut self, surface: ToplevelSurface) {
+        if surface.is_initial_configure_sent() {
+            self.configure_toplevel(&surface);
+        }
+    }
+
     fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {
         // Handle popup creation here
     }

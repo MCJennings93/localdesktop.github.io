@@ -1,0 +1,30 @@
+#!/bin/bash
+# Does a fresh session get the window's real size, with no rotation or fold to prompt it?
+# Restarts the app, which ends the running session, then compares KWin's screen with Android's
+# window. Fails if KWin is still at its default 1024x768. Keep the phone still while it runs.
+# Usage: ld-firstsize
+PKG=${LD_PKG:-io.github.localdesktop}
+PROBE='P=$(pidof -s plasmashell); [ -n "$P" ] || exit 1
+export $(tr "\0" "\n" </proc/$P/environ | grep ^DBUS_SESSION_BUS_ADDRESS=)
+cat > /tmp/ld-firstsize.js <<JS
+for (const s of workspace.screens) print("LDFIRST", s.geometry.width, s.geometry.height);
+JS
+id=$(qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript /tmp/ld-firstsize.js ld-firstsize) || exit 1
+qdbus6 org.kde.KWin /Scripting/Script$id org.kde.kwin.Script.run >/dev/null; sleep 1
+qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript ld-firstsize >/dev/null
+grep -a LDFIRST /tmp/plasma-mobile-session.log | tail -1 | sed "s/.*LDFIRST //"'
+adb shell am force-stop "$PKG"; sleep 1
+adb shell am start -n "$PKG/android.app.NativeActivity" >/dev/null
+sleep 20
+kwin=$(~/bin/ld-run "$PROBE" 20 | grep -E '^[0-9]+ [0-9]+$')
+read -r w h <<<"$(adb shell dumpsys window windows | grep -A40 "$PKG/android.app.NativeActivity" | grep -m1 -oE 'frame=\[0,0\]\[[0-9]+,[0-9]+\]' | sed -E 's/.*\]\[([0-9]+),([0-9]+)\]/\1 \2/')"
+density=$(adb shell wm density | tail -1 | grep -oE '[0-9]+$')
+want=$(awk -v w="$w" -v h="$h" -v d="$density" 'BEGIN { printf "%d %d", w * 160 / d + 0.5, h * 160 / d + 0.5 }')
+echo "window ${w}x${h} at ${density} dpi: want KWin at $want, KWin has ${kwin:-nothing}"
+set -- $want $kwin
+if [ $# -eq 4 ] && [ $(( ${1} - ${3} )) -ge -1 ] && [ $(( ${1} - ${3} )) -le 1 ] && [ $(( ${2} - ${4} )) -ge -1 ] && [ $(( ${2} - ${4} )) -le 1 ]; then
+    echo PASS
+else
+    echo FAIL
+    exit 1
+fi
