@@ -1322,3 +1322,16 @@ Then: ld-labwctest 8 runs PASS. User checked by eye in the fresh session: Plasma
 - Side effect: any display whose short side is under 516 logical also gets smaller, e.g. a 1080-wide phone at 420 dpi goes from 2.625x to about 2.09x. Not tried on such a phone.
 - Installed: dev-3a6b94f-scale-1, same code as this commit.
 - Next is unchanged: Steam cut to 1920x1080 unfolded (2026-11-04 RESUME HERE), then games on the second X server, then the controller visual test.
+
+## 2026-11-05 ~10:45 — RESUME HERE: next session is the CONTROLLER (user's choice)
+All work is committed, not pushed. See below for the installed build.
+
+**Start with the controller visual test,** with the user watching: `ld-padtest` proves Android -> app -> ring only, so see Steam's UI react. Sequence: D-pad right x4, Capture tap, B, Capture + Minus, B. Then try a real controller if the user has one to hand. Earlier state: the 2026-11-03 RESUME HERE and docs/steam-deck-controller.md. Launch Game Mode from the menu, not ld-run. Remember no screen capture: the user reports what they see.
+
+**Backlog, not next:**
+- Steam cut to 1920x1080 sideways and 1811x1080 upright when unfolded (2026-11-04 RESUME HERE has the leads). User, on the current state: "It looks good as-is", so don't start it without asking.
+- Games on the second X server untested, and Bastion's touch needs a recheck.
+- Steam's "SteamOS" startup graphic is too wide on the folded upright screen. Cosmetic; cause not investigated. The Steam UI itself is right: 904x2315 on a 904x2316 window, measured.
+- Plasma has no Xwayland (/tmp/.X11-unix mode, see 2026-11-04).
+- Yesterday's black screen didn't come back; cause never found.
+- ld-firstsize hasn't been run on the scale-fix build; unfolded at 2.625x not measured on it.
