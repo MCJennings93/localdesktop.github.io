@@ -1,8 +1,9 @@
 #!/usr/bin/python3
 # Runs x86 Linux programs (Steam games via the localdesktop-fex compatibility tool) under FEX with Steam Linux
 # Runtime 3.0 as the x86 root and FEX's GL/Vulkan thunks. From DroidDeck 4f58230a tools/linuxfs/overlay/usr/local/bin/
-# droiddeck-fex (GPL-3.0). Differences: state paths, the updater name, and build_rootfs copies the runtime
-# instead of linking to it (see copy_in).
+# droiddeck-fex (GPL-3.0). Differences: state paths, the updater name, build_rootfs copies the runtime
+# instead of linking to it (see copy_in), and the x86 preloads live in /usr/local/lib/localdesktop-fex and follow
+# the Steam client's LD_PRELOAD as well as /etc/ld.so.preload (see host_preloads).
 import contextlib
 import fcntl
 import filecmp
@@ -28,7 +29,7 @@ STATUS_FILE = os.path.join(STATE, "status.json")
 WANTED = os.path.join(HOME, ".config", "localdesktop", "fex-wanted")
 GAME_ENVIRONMENT = os.path.join(HOME, ".config", "droiddeck", "game-environment.json")
 BIN_DIR = os.path.dirname(os.path.abspath(__file__))
-PRELOADS = "/usr/local/lib/droiddeck-fex"
+PRELOADS = "/usr/local/lib/localdesktop-fex"
 URUNTIME = "/usr/local/lib/droiddeck/uruntime"
 HOST_PRELOAD = "/etc/ld.so.preload"
 FEX_APPID = "3127680"
@@ -387,7 +388,10 @@ def build_rootfs(base, provider):
 
 
 def host_preloads():
-    listed = read_text(HOST_PRELOAD) or ""
+    # localdesktop-steam preloads libfakeinput into the client with LD_PRELOAD, which games launched by it inherit
+    # (and which guest_environment drops as ARM): the game needs the x86 build in its place.
+    listed = (read_text(HOST_PRELOAD) or "").split()
+    listed += [os.path.basename(part) for part in split_paths(os.environ.get("LD_PRELOAD"))]
     return [name for name in PRELOAD_NAMES if name in listed]
 
 
@@ -536,8 +540,6 @@ def prepare(app=SNIPER_APPID):
         root = os.path.join(platform, "files")
         if materialize(platform):
             say("prepared %s as the x86 runtime" % os.path.basename(platform))
-        install_preloads(root)
-        install_fonts(root)
         provider = None
         if app == SNIPER_APPID:
             provider = graphics_platform()
@@ -554,6 +556,9 @@ def prepare(app=SNIPER_APPID):
                     say("built the x86 runtime from %s with the C and C++ libraries of %s"
                         % (os.path.basename(platform), os.path.basename(provider)))
                 root = os.path.join(STATE, "rootfs")
+        # Into the root FEX uses, on every run: the built rootfs is a copy, rebuilt only when the runtimes change.
+        install_preloads(root)
+        install_fonts(root)
         with contextlib.suppress(OSError):
             link_guest_sdk(root)
         write_config(fex, root)
