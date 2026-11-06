@@ -1417,3 +1417,8 @@ User chose "each controller as itself" (separate emulated device per physical co
 - Next: commit (ask), then step 2 (slots).
 - 12:35: Bastion shows zero community layouts for the Switch Pro; Steam's query ran fine (Input.QueryControllerConfigsForApp, logged on; the CAPIJobRequestUserStats failures are routine, 241 since 10-28). User confirmed other games list several Switch Pro community layouts: Bastion just has none. Moving on.
 - Committing: gyro --wave mode + docs, then the Switch Pro device (with the reply retry). Next: step 2, a slot per physical controller.
+- 12:45: committed f7e7867 (gyrotest --wave) + 8adca0c (Switch Pro), unpushed (7 ahead of fork/main counting today's). Installed dev-8adca0c (APK in ~/localdesktop-bench/apks/), tree clean except these notes.
+
+## RESUME HERE (2026-11-06 end): next = step 2 of "each controller as itself"
+One ring + one emulated device per physical controller (separate players). Deck stays on slot 0 for the on-screen gamepad. Needs: per-slot rings (FAKE_EVDEV_MEMFD_PATHS already takes "0=..;1=.."), libfakeinput's pad type and hidraw devices per slot instead of slot 0 + a global live type (ring_blocks/live_pad_type/open_deck_hidraw/show_pad_class_link/pad_type_thread are all slot-0), per-slot sysfs nodes + minors, gamepad.rs routing by Android device id with real connect/disconnect (a Java InputDeviceListener like ControllerMotion's), ControllerMotion per device. Then step 3: Sony as DS4/DualSense (types exist; DroidDeck describes them in SteamDeckPad.kt describeSony), others as Xbox.
+Open checks: Bastion A/B without the focus diagnostic (probably fine); Switch Pro rumble strength (rough decode, untested on the phone).
