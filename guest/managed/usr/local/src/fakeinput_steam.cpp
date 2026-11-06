@@ -1397,7 +1397,7 @@ static bool fake_deck_enabled() {
 }
 
 static constexpr uint32_t PAD_TYPE_DECK = 0, PAD_TYPE_STEAM = 1, PAD_TYPE_XBOX = 2, PAD_TYPE_DS4 = 3,
-                          PAD_TYPE_DUALSENSE = 4, PAD_TYPE_LAST = PAD_TYPE_DUALSENSE;
+                          PAD_TYPE_DUALSENSE = 4, PAD_TYPE_SWITCH_PRO = 5, PAD_TYPE_LAST = PAD_TYPE_SWITCH_PRO;
 static constexpr uint32_t PAD_TYPE_SET = 0x80000000u;
 
 __attribute__((visibility("hidden"))) static uint32_t session_pad_type() {
@@ -1407,7 +1407,8 @@ __attribute__((visibility("hidden"))) static uint32_t session_pad_type() {
     type = env && !strcmp(env, "steamcontroller") ? PAD_TYPE_STEAM
          : env && !strcmp(env, "xbox360") ? PAD_TYPE_XBOX
          : env && !strcmp(env, "dualshock4") ? PAD_TYPE_DS4
-         : env && !strcmp(env, "dualsense") ? PAD_TYPE_DUALSENSE : PAD_TYPE_DECK;
+         : env && !strcmp(env, "dualsense") ? PAD_TYPE_DUALSENSE
+         : env && !strcmp(env, "switchpro") ? PAD_TYPE_SWITCH_PRO : PAD_TYPE_DECK;
   }
   return static_cast<uint32_t>(type);
 }
@@ -1509,12 +1510,20 @@ __attribute__((visibility("hidden"))) static bool is_deck_hidraw_path(const char
 
 static constexpr const char *DS4_HIDRAW_PATH = "/dev/hidraw20";
 static constexpr const char *DUALSENSE_HIDRAW_PATH = "/dev/hidraw21";
-static constexpr unsigned int DS4_HIDRAW_MINOR = 20, DUALSENSE_HIDRAW_MINOR = 21;
+static constexpr const char *SWITCH_HIDRAW_PATH = "/dev/hidraw22";
+static constexpr unsigned int DS4_HIDRAW_MINOR = 20, DUALSENSE_HIDRAW_MINOR = 21, SWITCH_HIDRAW_MINOR = 22;
+
+// The pads served on /dev/hidraw2x, by DeckHidraw::sony: 4 a DualShock 4, 5 a DualSense, 6 a Switch
+// Pro Controller (Local Desktop; Nintendo's protocol, see the Switch section).
+__attribute__((visibility("hidden"))) static unsigned int sony_minor(uint8_t sony) {
+  return sony == 4 ? DS4_HIDRAW_MINOR : sony == 5 ? DUALSENSE_HIDRAW_MINOR : SWITCH_HIDRAW_MINOR;
+}
 
 __attribute__((visibility("hidden"))) static int sony_pad_path(const char *pathname) {
   if (!pathname || !fake_deck_enabled() || strncmp(pathname, "/dev/hidraw2", 12)) return 0;
   if (!strcmp(pathname, DS4_HIDRAW_PATH)) return live_pad_type() == PAD_TYPE_DS4 ? 4 : 0;
   if (!strcmp(pathname, DUALSENSE_HIDRAW_PATH)) return live_pad_type() == PAD_TYPE_DUALSENSE ? 5 : 0;
+  if (!strcmp(pathname, SWITCH_HIDRAW_PATH)) return live_pad_type() == PAD_TYPE_SWITCH_PRO ? 6 : 0;
   return 0;
 }
 
@@ -1746,8 +1755,11 @@ __attribute__((visibility("hidden"))) static void *sony_report_thread(void *arg)
   return nullptr;
 }
 
+static void *switch_report_thread(void *arg);
+
 __attribute__((visibility("hidden"))) static int open_deck_hidraw(int flags, uint8_t sony = 0) {
-  const char *path = sony == 4 ? DS4_HIDRAW_PATH : sony == 5 ? DUALSENSE_HIDRAW_PATH : DECK_HIDRAW_PATH;
+  const char *path = sony == 4 ? DS4_HIDRAW_PATH : sony == 5 ? DUALSENSE_HIDRAW_PATH
+                   : sony == 6 ? SWITCH_HIDRAW_PATH : DECK_HIDRAW_PATH;
   static auto my_open = reinterpret_cast<int (*)(const char *, int, ...)>(dlsym(RTLD_NEXT, "open"));
   if (!process_is_steam_client()) {
     Logger::log("deck: %s refused: not the Steam client\n", path);
@@ -1798,7 +1810,8 @@ __attribute__((visibility("hidden"))) static int open_deck_hidraw(int flags, uin
   }
   pthread_t thread;
   auto *arg = new std::shared_ptr<DeckHidraw>(deck);
-  if (pthread_create(&thread, nullptr, sony ? sony_report_thread : deck_report_thread, arg) != 0) {
+  void *(*report_thread)(void *) = sony == 6 ? switch_report_thread : sony ? sony_report_thread : deck_report_thread;
+  if (pthread_create(&thread, nullptr, report_thread, arg) != 0) {
     delete arg;
     std::lock_guard<std::recursive_mutex> guard(controller_mutex());
     deck_map().erase(pair[0]);
@@ -1811,7 +1824,7 @@ __attribute__((visibility("hidden"))) static int open_deck_hidraw(int flags, uin
   }
   pthread_detach(thread);
   Logger::log("deck: %s opened as fd %d%s\n", path, pair[0],
-              sony == 4 ? " (a DualShock 4)" : sony == 5 ? " (a DualSense)" : "");
+              sony == 4 ? " (a DualShock 4)" : sony == 5 ? " (a DualSense)" : sony == 6 ? " (a Switch Pro Controller)" : "");
   return pair[0];
 }
 
@@ -2303,6 +2316,7 @@ static constexpr const char *PAD_EVDEV_DEVPATH = "/devices/virtual/input/droidde
 static constexpr const char *DS4_DEVPATH = "/devices/droiddeck/usb4/4-1:1.3/0003:054C:09CC.0005/hidraw/hidraw20";
 static constexpr const char *DUALSENSE_DEVPATH = "/devices/droiddeck/usb5/5-1:1.3/0003:054C:0CE6.0006/hidraw/hidraw21";
 static constexpr const char *TRITON_DEVPATH = "/devices/droiddeck/bluetooth/0005:28DE:1303.0003/hidraw/hidraw18";
+static constexpr const char *SWITCH_DEVPATH = "/devices/droiddeck/bluetooth/0005:057E:2009.0007/hidraw/hidraw22";
 
 __attribute__((visibility("hidden"))) static int pad_type_uevent(uint32_t type, const char *action) {
   if (type == PAD_TYPE_DECK)
@@ -2312,6 +2326,8 @@ __attribute__((visibility("hidden"))) static int pad_type_uevent(uint32_t type, 
   if (type == PAD_TYPE_DUALSENSE)
     return inject_uevent(action, DUALSENSE_DEVPATH, "hidraw", DUALSENSE_HIDRAW_PATH, DECK_HIDRAW_MAJOR,
                          DUALSENSE_HIDRAW_MINOR);
+  if (type == PAD_TYPE_SWITCH_PRO)
+    return inject_uevent(action, SWITCH_DEVPATH, "hidraw", SWITCH_HIDRAW_PATH, DECK_HIDRAW_MAJOR, SWITCH_HIDRAW_MINOR);
   if (type == PAD_TYPE_STEAM)
     return inject_uevent(action, TRITON_PAD_DEVPATH, "hidraw", TRITON_PAD_HIDRAW_PATH, TRITON_HIDRAW_MAJOR,
                          TRITON_PAD_HIDRAW_MINOR);
@@ -2333,15 +2349,43 @@ __attribute__((visibility("hidden"))) static void poke_hidraw_watchers(unsigned 
 __attribute__((visibility("hidden"))) static unsigned pad_type_minor(uint32_t type) {
   return type == PAD_TYPE_DS4 ? DS4_HIDRAW_MINOR
        : type == PAD_TYPE_DUALSENSE ? DUALSENSE_HIDRAW_MINOR
+       : type == PAD_TYPE_SWITCH_PRO ? SWITCH_HIDRAW_MINOR
        : type == PAD_TYPE_STEAM ? TRITON_PAD_HIDRAW_MINOR : DECK_HIDRAW_MINOR;
+}
+
+// Local Desktop: only the live pad type's hidraw node is listed in /sys/class/hidraw (the app binds a
+// directory there; localdesktop-pad describes every pad under /sys/devices/droiddeck), so Steam's
+// enumeration finds the one controller it can open.
+__attribute__((visibility("hidden"))) static void show_pad_class_link(uint32_t type) {
+  struct Pad {
+    uint32_t type;
+    unsigned minor;
+    const char *devpath;
+  };
+  static const Pad pads[] = {{PAD_TYPE_DECK, DECK_HIDRAW_MINOR, DECK_DEVPATH},
+                             {PAD_TYPE_DS4, DS4_HIDRAW_MINOR, DS4_DEVPATH},
+                             {PAD_TYPE_DUALSENSE, DUALSENSE_HIDRAW_MINOR, DUALSENSE_DEVPATH},
+                             {PAD_TYPE_SWITCH_PRO, SWITCH_HIDRAW_MINOR, SWITCH_DEVPATH}};
+  for (const Pad &pad : pads) {
+    std::string link = "/sys/class/hidraw/hidraw" + std::to_string(pad.minor);
+    std::string target = std::string("/sys") + pad.devpath;
+    if (pad.type != type) {
+      unlink(link.c_str());
+    } else if (access((target + "/uevent").c_str(), F_OK) == 0) {
+      unlink(link.c_str());
+      if (symlink(target.c_str(), link.c_str()) < 0)
+        Logger::log("pad: %s not listed (%s)\n", link.c_str(), strerror(errno));
+    }
+  }
 }
 
 __attribute__((visibility("hidden"))) static void *pad_type_thread(void *) {
   static const char *kNames[] = {"Steam Deck controller", "Steam Controller", "Xbox 360 controller",
-                                 "DualShock 4", "DualSense"};
+                                 "DualShock 4", "DualSense", "Switch Pro Controller"};
   uint32_t was = live_pad_type();
+  show_pad_class_link(was);
   bool paired = fake_triton_enabled() && triton_connected();
-  Logger::log("pad: a %s at start%s\n", kNames[was % 5], paired ? ", the paired Steam Controller connected" : "");
+  Logger::log("pad: a %s at start%s\n", kNames[was % 6], paired ? ", the paired Steam Controller connected" : "");
   for (;;) {
     struct timespec interval = {0, 50 * 1000 * 1000};
     nanosleep(&interval, nullptr);
@@ -2356,6 +2400,7 @@ __attribute__((visibility("hidden"))) static void *pad_type_thread(void *) {
     uint32_t now = live_pad_type();
     if (now == was || now > PAD_TYPE_LAST) continue;
     int removed = pad_type_uevent(was, "remove");
+    show_pad_class_link(now);
     struct timespec settle = {0, 300 * 1000 * 1000};
     nanosleep(&settle, nullptr);
     int added = pad_type_uevent(now, "add");
@@ -2661,6 +2706,307 @@ __attribute__((visibility("hidden"))) static int ioctl_sony(DeckHidraw &pad, ioc
     return -1;
   }
 }
+
+// ---- Local Desktop: a Switch Pro Controller (057e:2009, Bluetooth), served like the Sony pads ----
+// Steam's (and SDL's) Switch driver talks Nintendo's HID protocol over /dev/hidraw22: output report
+// 0x01 carries a subcommand (with rumble), 0x10 rumble alone; the pad answers a subcommand with input
+// report 0x21 and streams full reports 0x30 (buttons, 12-bit sticks, three IMU samples). Replies
+// follow dekuNukem's Nintendo_Switch_Reverse_Engineering notes and SDL's SDL_hidapi_switch.c; the SPI
+// flash holds factory stick and IMU calibrations a driver reads at start. Buttons come from the ring
+// by label (gamepad.rs maps a Nintendo controller by its labels): the ring's A is the Switch's A.
+static constexpr uint8_t SWITCH_PRO = 6;
+static constexpr int SWITCH_REPORT_BYTES = 64;
+static constexpr int SWITCH_REPORT_INTERVAL_US = 8000;
+static const uint8_t SWITCH_MAC[6] = {0x02, 0x4c, 0x44, 0x00, 0x00, 0x06};
+// Vendor-defined reports as a Bluetooth Pro Controller declares them: inputs 0x21, 0x30, 0x31 and
+// 0x3f, outputs 0x01, 0x10, 0x11 and 0x12, 63 bytes of data each.
+static const uint8_t kSwitchProReportDescriptor[] = {
+    0x05, 0x01, 0x09, 0x05, 0xa1, 0x01,
+    0x06, 0x01, 0xff,
+    0x85, 0x21, 0x09, 0x21, 0x15, 0x00, 0x26, 0xff, 0x00, 0x75, 0x08, 0x95, 0x3f, 0x81, 0x02,
+    0x85, 0x30, 0x09, 0x30, 0x95, 0x3f, 0x81, 0x02,
+    0x85, 0x31, 0x09, 0x31, 0x95, 0x3f, 0x81, 0x02,
+    0x85, 0x3f, 0x09, 0x3f, 0x95, 0x3f, 0x81, 0x02,
+    0x85, 0x01, 0x09, 0x01, 0x95, 0x3f, 0x91, 0x02,
+    0x85, 0x10, 0x09, 0x10, 0x95, 0x3f, 0x91, 0x02,
+    0x85, 0x11, 0x09, 0x11, 0x95, 0x3f, 0x91, 0x02,
+    0x85, 0x12, 0x09, 0x12, 0x95, 0x3f, 0x91, 0x02,
+    0xc0};
+
+static constexpr int SWITCH_STICK_CENTER = 2048, SWITCH_STICK_RANGE = 1600;
+
+__attribute__((visibility("hidden"))) static void put_switch_stick(uint8_t *at, int x, int y) {
+  at[0] = static_cast<uint8_t>(x & 0xff);
+  at[1] = static_cast<uint8_t>(((x >> 8) & 0x0f) | ((y & 0x0f) << 4));
+  at[2] = static_cast<uint8_t>((y >> 4) & 0xff);
+}
+
+// The factory SPI flash a driver reads: serial (none), body and button colours, factory IMU and
+// stick calibrations and stick parameters; unwritten bytes read as 0xff, as on a real pad, so there
+// is no user calibration.
+__attribute__((visibility("hidden"))) static uint8_t switch_flash(uint32_t address) {
+  static uint8_t flash[0x10000];
+  static std::once_flag once;
+  std::call_once(once, [] {
+    memset(flash, 0xff, sizeof(flash));
+    flash[0x6012] = 0x03;  // Pro Controller
+    flash[0x601b] = 0x01;  // colours are in the flash
+    uint8_t *imu = flash + 0x6020;  // accel origin, accel sensitivity, gyro origin, gyro sensitivity
+    for (int i = 0; i < 3; i++) {
+      put16(imu + i * 2, 0);
+      put16(imu + 6 + i * 2, 0x4000);
+      put16(imu + 12 + i * 2, 0);
+      put16(imu + 18 + i * 2, 0x343b);
+    }
+    // Left stick: above-centre range, centre, below-centre range; right stick: centre, below, above.
+    put_switch_stick(flash + 0x603d, SWITCH_STICK_RANGE, SWITCH_STICK_RANGE);
+    put_switch_stick(flash + 0x6040, SWITCH_STICK_CENTER, SWITCH_STICK_CENTER);
+    put_switch_stick(flash + 0x6043, SWITCH_STICK_RANGE, SWITCH_STICK_RANGE);
+    put_switch_stick(flash + 0x6046, SWITCH_STICK_CENTER, SWITCH_STICK_CENTER);
+    put_switch_stick(flash + 0x6049, SWITCH_STICK_RANGE, SWITCH_STICK_RANGE);
+    put_switch_stick(flash + 0x604c, SWITCH_STICK_RANGE, SWITCH_STICK_RANGE);
+    const uint8_t colours[12] = {0x32, 0x32, 0x32, 0xe6, 0xe6, 0xe6, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32};
+    memcpy(flash + 0x6050, colours, sizeof(colours));
+    // Sensor parameters, then the sticks' dead zone and range parameters, from a factory dump.
+    const uint8_t sensor[6] = {0x50, 0xfd, 0x00, 0x00, 0xc6, 0x0f};
+    const uint8_t stick[18] = {0x0f, 0x30, 0x61, 0x96, 0x30, 0xf3, 0xd4, 0x14, 0x54,
+                               0x41, 0x15, 0x54, 0xc7, 0x79, 0x9c, 0x33, 0x36, 0x63};
+    memcpy(flash + 0x6080, sensor, sizeof(sensor));
+    memcpy(flash + 0x6086, stick, sizeof(stick));
+    memcpy(flash + 0x6098, stick, sizeof(stick));
+  });
+  return flash[address & 0xffff];
+}
+
+struct SwitchState {
+  uint8_t buttons[3] = {};  // right (Y X B A SR SL R ZR), shared (- + RS LS Home Capture), left (v ^ > < SR SL L ZL)
+  int stick[4] = {SWITCH_STICK_CENTER, SWITCH_STICK_CENTER, SWITCH_STICK_CENTER, SWITCH_STICK_CENTER};
+  int16_t accel[3] = {};
+  int16_t gyro[3] = {};
+};
+
+// The ring's snapshot and IMU block as the Switch would report them. IMU: the block is in the
+// Deck's axes (x, -z, y of SDL's x right, y up, z toward the player); the Switch's raw axes are
+// (-z, -x, y) of SDL's (SDL_hidapi_switch.c undoes it), so raw = (deck y, -deck x, deck z). Units:
+// with the flash's calibration 1 g is 4096 counts (the Deck: 16384) and 1 deg/s 14.29 (the Deck: 16.384).
+__attribute__((visibility("hidden"))) static SwitchState switch_state(const DeckHidraw &pad, uint32_t buttons,
+                                                                      const int32_t *axes) {
+  SwitchState s;
+  auto bit = [&](int index) { return (buttons >> index) & 1u; };
+  // kSnapshotButtons: A B X Y L1 R1 View Menu L3 R3 Steam QAM.
+  s.buttons[0] = static_cast<uint8_t>((bit(3) ? 0x01 : 0) | (bit(2) ? 0x02 : 0) | (bit(1) ? 0x04 : 0) |
+                                      (bit(0) ? 0x08 : 0) | (bit(5) ? 0x40 : 0) | (axes[4] > 64 ? 0x80 : 0));
+  s.buttons[1] = static_cast<uint8_t>((bit(6) ? 0x01 : 0) | (bit(7) ? 0x02 : 0) | (bit(9) ? 0x04 : 0) |
+                                      (bit(8) ? 0x08 : 0) | (bit(10) ? 0x10 : 0) | (bit(11) ? 0x20 : 0));
+  s.buttons[2] = static_cast<uint8_t>((axes[7] > 0 ? 0x01 : 0) | (axes[7] < 0 ? 0x02 : 0) | (axes[6] > 0 ? 0x04 : 0) |
+                                      (axes[6] < 0 ? 0x08 : 0) | (bit(4) ? 0x40 : 0) | (axes[5] > 64 ? 0x80 : 0));
+  auto scale = [](int32_t value) {
+    return std::max(0, std::min(4095, SWITCH_STICK_CENTER + static_cast<int>(value) * SWITCH_STICK_RANGE / 32767));
+  };
+  // The ring's sticks grow downward on y (evdev); the Switch's grow upward.
+  s.stick[0] = scale(axes[0]);
+  s.stick[1] = scale(-axes[1]);
+  s.stick[2] = scale(axes[2]);
+  s.stick[3] = scale(-axes[3]);
+  DeckExtras extras;
+  if (read_deck_extras(pad, extras)) {
+    auto clamp16 = [](float value) {
+      return static_cast<int16_t>(std::max(-32768.0f, std::min(32767.0f, value)));
+    };
+    const int16_t *a = extras.accel, *g = extras.gyro;
+    s.accel[0] = clamp16(a[1] / 4.0f);
+    s.accel[1] = clamp16(-a[0] / 4.0f);
+    s.accel[2] = clamp16(a[2] / 4.0f);
+    const float gyro_scale = (13371.0f / 936.0f) / 16.384f;
+    s.gyro[0] = clamp16(g[1] * gyro_scale);
+    s.gyro[1] = clamp16(-g[0] * gyro_scale);
+    s.gyro[2] = clamp16(g[2] * gyro_scale);
+  }
+  return s;
+}
+
+__attribute__((visibility("hidden"))) static SwitchState switch_now(const DeckHidraw &pad) {
+  SnapshotState snap;
+  uint32_t buttons = 0;
+  int32_t axes[8] = {};
+  if (read_snapshot(pad.ring, snap) && snap.generation == ring_generation(pad.ring)) {
+    buttons = snap.buttons;
+    memcpy(axes, snap.axes, sizeof(axes));
+  }
+  return switch_state(pad, buttons, axes);
+}
+
+static std::atomic<uint8_t> switch_timer{0};
+
+// Bytes 1-12 of reports 0x21 and 0x30: timer, battery and connection, buttons, sticks, vibrator.
+__attribute__((visibility("hidden"))) static void put_switch_common(uint8_t *report, const SwitchState &s) {
+  report[1] = switch_timer.fetch_add(1, std::memory_order_relaxed);
+  report[2] = 0x90;  // battery full, a Pro Controller, on its own power
+  memcpy(report + 3, s.buttons, 3);
+  put_switch_stick(report + 6, s.stick[0], s.stick[1]);
+  put_switch_stick(report + 9, s.stick[2], s.stick[3]);
+  report[12] = 0x80;
+}
+
+__attribute__((visibility("hidden"))) static void build_switch_report(uint8_t *report, const SwitchState &s) {
+  memset(report, 0, SWITCH_REPORT_BYTES);
+  report[0] = 0x30;
+  put_switch_common(report, s);
+  for (int sample = 0; sample < 3; sample++) {
+    uint8_t *at = report + 13 + sample * 12;
+    for (int i = 0; i < 3; i++) {
+      put16(at + i * 2, s.accel[i]);
+      put16(at + 6 + i * 2, s.gyro[i]);
+    }
+  }
+}
+
+__attribute__((visibility("hidden"))) static void switch_reply(const DeckHidraw &pad, uint8_t subcommand,
+                                                               uint8_t ack, const uint8_t *data, size_t size) {
+  uint8_t report[SWITCH_REPORT_BYTES] = {};
+  report[0] = 0x21;
+  put_switch_common(report, switch_now(pad));
+  report[13] = ack;
+  report[14] = subcommand;
+  memcpy(report + 15, data, std::min<size_t>(size, SWITCH_REPORT_BYTES - 15));
+  // The input reports can fill the socket for a moment while Steam is busy; a driver waits for its
+  // reply (and may give up on the pad without it), so keep trying for up to 100 ms.
+  for (int attempt = 0;; attempt++) {
+    if (send(pad.peer, report, sizeof(report), MSG_DONTWAIT | MSG_NOSIGNAL) >= 0) return;
+    if ((errno != EAGAIN && errno != EWOULDBLOCK) || attempt == 50) break;
+    sleep_us(2000);
+  }
+  Logger::log("switch: reply to 0x%02x not sent (%s)\n", subcommand, strerror(errno));
+}
+
+__attribute__((visibility("hidden"))) static void switch_subcommand(const DeckHidraw &pad, const uint8_t *data,
+                                                                    size_t size) {
+  if (size < 11) return;
+  uint8_t subcommand = data[10];
+  const uint8_t *args = data + 11;
+  size_t arg_size = size - 11;
+  static std::atomic<uint32_t> logged[8];
+  if (!(logged[subcommand >> 5].fetch_or(1u << (subcommand & 31)) & (1u << (subcommand & 31))))
+    Logger::log("switch: subcommand 0x%02x\n", subcommand);
+  switch (subcommand) {
+  case 0x02: {  // device info: firmware, type, MAC, colours from the flash
+    uint8_t info[12] = {0x03, 0x48, 0x03, 0x02};
+    memcpy(info + 4, SWITCH_MAC, 6);
+    info[10] = 0x01;
+    info[11] = 0x01;
+    switch_reply(pad, subcommand, 0x82, info, sizeof(info));
+    return;
+  }
+  case 0x04: {  // the time the triggers were held
+    uint8_t times[14] = {};
+    switch_reply(pad, subcommand, 0x83, times, sizeof(times));
+    return;
+  }
+  case 0x10: {  // read the SPI flash: address (LE32), length
+    if (arg_size < 5) break;
+    uint32_t address = args[0] | args[1] << 8 | args[2] << 16 | static_cast<uint32_t>(args[3]) << 24;
+    uint8_t length = std::min<uint8_t>(args[4], 0x1d);
+    uint8_t out[5 + 0x1d];
+    memcpy(out, args, 5);
+    out[4] = length;
+    for (uint8_t i = 0; i < length; i++) out[5 + i] = switch_flash(address + i);
+    switch_reply(pad, subcommand, 0x90, out, 5u + length);
+    return;
+  }
+  case 0x21: {  // MCU configuration (the NFC/IR chip a Pro Controller does not have in use)
+    uint8_t mcu[34] = {0x01, 0x00, 0xff, 0x00, 0x08, 0x00, 0x1b, 0x01};
+    switch_reply(pad, subcommand, 0xa0, mcu, sizeof(mcu));
+    return;
+  }
+  case 0x01:  // Bluetooth pairing
+    switch_reply(pad, subcommand, 0x81, nullptr, 0);
+    return;
+  default:  // report mode, shipment, lights, IMU and vibration enable and the rest: a plain ack
+    break;
+  }
+  switch_reply(pad, subcommand, 0x80, nullptr, 0);
+}
+
+// Rumble in reports 0x01 and 0x10: per side, a high band (bytes 0-1) and a low band (bytes 2-3)
+// frequency and amplitude, Nintendo's encoding. An amplitude byte above the idle value counts as
+// rumble on that motor; it is only a rough stand-in for the HD rumble's strength.
+__attribute__((visibility("hidden"))) static void switch_rumble(const uint8_t *rumble) {
+  auto strength = [](const uint8_t *side) {
+    int high = (side[1] & 0xfe) >> 1;  // high band amplitude, 7 bits
+    int low = side[3] & 0x7f;          // low band amplitude, 7 bits
+    int value = std::max(high, low - 0x40 > 0 ? (low - 0x40) * 2 : 0);
+    return std::min(65535, value * 65535 / 0x64);
+  };
+  int left = strength(rumble), right = strength(rumble + 4);
+  static std::atomic<int> last{-1};
+  int now = left << 16 | right;
+  if (last.exchange(now) == now) return;
+  send_vibration(left, right, left || right ? 2000 : 0, 0);
+}
+
+__attribute__((visibility("hidden"))) static void switch_output(const DeckHidraw &pad, const uint8_t *data, size_t size) {
+  if (!data || size < 10) return;
+  if (data[0] == 0x01 || data[0] == 0x10) switch_rumble(data + 2);
+  if (data[0] == 0x01) switch_subcommand(pad, data, size);
+}
+
+__attribute__((visibility("hidden"))) static void *switch_report_thread(void *arg) {
+  auto *holder = static_cast<std::shared_ptr<DeckHidraw> *>(arg);
+  std::shared_ptr<DeckHidraw> self = *holder;
+  delete holder;
+  while (live_pad_type() == PAD_TYPE_SWITCH_PRO) {
+    uint8_t report[SWITCH_REPORT_BYTES];
+    build_switch_report(report, switch_now(*self));
+    if (send(self->peer, report, sizeof(report), MSG_DONTWAIT | MSG_NOSIGNAL) < 0 &&
+        errno != EAGAIN && errno != EWOULDBLOCK)
+      break;
+    sleep_us(controller_report_interval_us(SWITCH_REPORT_INTERVAL_US));
+  }
+  syscall(SYS_close, self->peer);
+  munmap(self->ring, self->mapping_size);
+  return nullptr;
+}
+
+__attribute__((visibility("hidden"))) static int ioctl_switch(DeckHidraw &pad, ioctl_request_t op, void *argp) {
+  (void)pad;
+  if (_IOC_TYPE(op) != 'H') {
+    errno = ENOTTY;
+    return -1;
+  }
+  switch (_IOC_NR(op)) {
+  case 0x01:
+    *static_cast<int *>(argp) = static_cast<int>(sizeof(kSwitchProReportDescriptor));
+    return 0;
+  case 0x02: {
+    auto *out = static_cast<uint8_t *>(argp);
+    uint32_t size;
+    memcpy(&size, out, sizeof(size));
+    memcpy(out + 4, kSwitchProReportDescriptor, std::min<size_t>(size, sizeof(kSwitchProReportDescriptor)));
+    return 0;
+  }
+  case 0x03: {
+    struct {
+      uint32_t bustype;
+      int16_t vendor;
+      int16_t product;
+    } info = {BUS_BLUETOOTH, static_cast<int16_t>(0x057e), static_cast<int16_t>(0x2009)};
+    memcpy(argp, &info, sizeof(info));
+    return 0;
+  }
+  case 0x04: return copy_ioctl_string(op, argp, "Pro Controller");
+  case 0x05: return copy_ioctl_string(op, argp, "bluetooth-droiddeck-6");
+  case 0x08: return copy_ioctl_string(op, argp, "02:4c:44:00:00:06");
+  case 0x06:
+    return static_cast<int>(_IOC_SIZE(op));
+  case 0x07:  // a Pro Controller has no feature reports
+    errno = EPIPE;
+    return -1;
+  default:
+    errno = EINVAL;
+    return -1;
+  }
+}
+// ---- end of the Switch Pro Controller ----
 
 __attribute__((visibility("hidden"))) static int
 ioctl_deck(DeckHidraw &deck, ioctl_request_t op, void *argp) {
@@ -3243,7 +3589,7 @@ static int fake_stat_path(const char *pathname, S *statbuf, Real real) {
   if (int sony = sony_pad_path(pathname)) {
     memset(statbuf, 0, sizeof(*statbuf));
     statbuf->st_mode = S_IFCHR | 0666;
-    statbuf->st_rdev = makedev(DECK_HIDRAW_MAJOR, sony == 4 ? DS4_HIDRAW_MINOR : DUALSENSE_HIDRAW_MINOR);
+    statbuf->st_rdev = makedev(DECK_HIDRAW_MAJOR, sony_minor(static_cast<uint8_t>(sony)));
     return 0;
   }
   if (is_triton_hidraw_path(pathname) || is_triton_pad_path(pathname)) {
@@ -3300,8 +3646,7 @@ static int fake_stat_fd(int fd, S *buf, Real real) {
     buf->st_mode = (buf->st_mode & ~S_IFMT) | S_IFCHR;
     const auto &device = *deck_map()[fd];
     unsigned int minor = device.touch ? TOUCH_HIDRAW_MINOR
-                       : device.sony == 4 ? DS4_HIDRAW_MINOR
-                       : device.sony == 5 ? DUALSENSE_HIDRAW_MINOR
+                       : device.sony ? sony_minor(device.sony)
                        : device.emulated ? TRITON_PAD_HIDRAW_MINOR
                        : device.triton ? TRITON_HIDRAW_MINOR : DECK_HIDRAW_MINOR;
     buf->st_rdev = makedev(DECK_HIDRAW_MAJOR, minor);
@@ -3525,6 +3870,7 @@ EXPORT int ioctl(int fd, ioctl_request_t op, ...) {
   auto deck = deck_map().find(fd);
   if (deck != deck_map().end()) {
     if (deck->second->touch) return ioctl_touch(*deck->second, op, argp);
+    if (deck->second->sony == SWITCH_PRO) return ioctl_switch(*deck->second, op, argp);
     if (deck->second->sony) return ioctl_sony(*deck->second, op, argp);
     if (deck->second->triton) {
       std::shared_ptr<DeckHidraw> triton = deck->second;
@@ -3922,6 +4268,7 @@ EXPORT ssize_t write(int fd, const void *buf, size_t count) {
   if (made != uinput_map().end()) return write_uinput(*made->second, buf, count);
   if (deck_map().count(fd)) {
     if (deck_map()[fd]->touch) touch_output(static_cast<const uint8_t *>(buf), count);
+    else if (deck_map()[fd]->sony == SWITCH_PRO) switch_output(*deck_map()[fd], static_cast<const uint8_t *>(buf), count);
     else if (deck_map()[fd]->sony) sony_output(*deck_map()[fd], static_cast<const uint8_t *>(buf), count);
     else if (deck_map()[fd]->emulated) triton_pad_output(static_cast<const uint8_t *>(buf), count);
     else if (deck_map()[fd]->triton) triton_queue_output(*deck_map()[fd], static_cast<const uint8_t *>(buf), count, false);
@@ -3955,6 +4302,7 @@ EXPORT ssize_t writev(int fd, const struct iovec *iov, int iovcnt) {
     auto device = deck_map()[fd];
     for (int i = 0; i < iovcnt; i++) {
       if (device->touch) touch_output(static_cast<const uint8_t *>(iov[i].iov_base), iov[i].iov_len);
+      else if (device->sony == SWITCH_PRO) switch_output(*device, static_cast<const uint8_t *>(iov[i].iov_base), iov[i].iov_len);
       else if (device->sony) sony_output(*device, static_cast<const uint8_t *>(iov[i].iov_base), iov[i].iov_len);
       else if (device->emulated) triton_pad_output(static_cast<const uint8_t *>(iov[i].iov_base), iov[i].iov_len);
       else if (device->triton) triton_queue_output(*device, static_cast<const uint8_t *>(iov[i].iov_base), iov[i].iov_len, false);

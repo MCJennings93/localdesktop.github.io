@@ -70,11 +70,17 @@ Open:
      udev's netlink socket and sysfs/udev entries for each virtual pad
      ([Steam Deck controller](docs/steam-deck-controller.md)). Follow-up: merge the ARM
      `udev-netlink-shim` (KWin) with libfakeinput's `udevmon.c`, which do the same socket trick.
+   - **Each controller as itself.** Step 1 done: a Nintendo controller is presented to Steam as a
+     Switch Pro Controller (libfakeinput speaks Nintendo's Bluetooth HID protocol on
+     `/dev/hidraw22`), so Steam's Switch glyphs, layouts and community configs apply; tested with a
+     real Switch Pro Controller in Steam and in Bastion. Next: one ring and emulated device per
+     physical controller (separate players), then Sony controllers as DualShock 4/DualSense.
    - **Gyro.** Built: a controller's motion sensors, read through Android's controller sensor API
      while Steam wants motion, become the emulated Deck's gyro and accelerometer (`ld-gyrotest`
      passes with a virtual DualShock 4). Needs a controller whose kernel driver exposes its IMU
      (DualShock 4, DualSense; Switch controllers on Linux 5.16+); the 5.15 test phone exposes none
-     for the Switch Pro Controller. Still to check: Steam's UI and gyro-to-mouse reacting to it.
+     for the Switch Pro Controller. Steam sees it (its gyro calibration screen follows the virtual
+     controller); still to try: gyro as mouse in a game's layout.
    - **On-screen gamepad** (off by default). It stops drawing while still taking touches, its STEAM
      button doesn't open Steam's menu or the Quick Access Menu, and touching it flashes the screen.
 2. **Games at any resolution and aspect ratio.** On screens larger than 1920x1080, Steam's own

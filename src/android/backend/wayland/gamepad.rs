@@ -37,6 +37,12 @@ use winit::event::{Touch, TouchPhase};
 const SNAPSHOT_SEQ: u64 = 32;
 const SNAPSHOT_BUTTONS: u64 = 40;
 const RING_MAGIC: u32 = 0x4649_4252;
+/// The pad type field of the ring's IMU block (libfakeinput's `DeckImu::pad_type`): which controller
+/// libfakeinput presents to Steam, with the top bit set once chosen.
+const PAD_TYPE: u64 = 64 + 4096 * 24 + 44;
+const PAD_TYPE_SET: u32 = 0x8000_0000;
+const PAD_TYPE_DECK: u32 = 0;
+const PAD_TYPE_SWITCH_PRO: u32 = 5;
 
 // Snapshot button bits (libfakeinput's kSnapshotButtons, Quick Access at 11).
 const A: u32 = 0;
@@ -198,6 +204,8 @@ pub struct Gamepad {
     game_mode: bool,
     checked: Option<Instant>,
     ring: Option<File>,
+    /// The pad type last written into this ring.
+    pad_type: Option<u32>,
     font: Option<ab_glyph::FontVec>,
     last_stick_tap: HashMap<usize, Instant>,
 }
@@ -234,6 +242,7 @@ impl Gamepad {
             game_mode: false,
             checked: None,
             ring: None,
+            pad_type: None,
             font: None,
             last_stick_tap: HashMap::new(),
         }
@@ -343,7 +352,21 @@ impl Gamepad {
             }
         }
         self.publish();
+        // Steam sees a Nintendo controller as a Switch Pro Controller (its glyphs, templates and
+        // button layout), any other as the Steam Deck controller: the last one pressed decides.
+        self.set_pad_type(if nintendo { PAD_TYPE_SWITCH_PRO } else { PAD_TYPE_DECK });
         tap
+    }
+
+    fn set_pad_type(&mut self, pad_type: u32) {
+        if self.pad_type == Some(pad_type) {
+            return;
+        }
+        let Some(ring) = self.ring.as_ref() else { return };
+        if ring.write_all_at(&(PAD_TYPE_SET | pad_type).to_le_bytes(), PAD_TYPE).is_ok() {
+            log::info!("gamepad: Steam now sees a {}", if pad_type == PAD_TYPE_SWITCH_PRO { "Switch Pro Controller" } else { "Steam Deck controller" });
+            self.pad_type = Some(pad_type);
+        }
     }
 
     pub fn end_steam_tap(&mut self) {
@@ -386,6 +409,7 @@ impl Gamepad {
     /// A new session makes a new ring.
     pub fn session_ended(&mut self) {
         self.ring = None;
+        self.pad_type = None;
     }
 
     fn lay_out(&mut self, w: i32, h: i32) {
@@ -562,6 +586,7 @@ impl Gamepad {
         let mut word = [0u8; 8];
         if ring.read_at(&mut word[..4], 0).is_err() || u32::from_le_bytes(word[..4].try_into().unwrap()) != RING_MAGIC {
             self.ring = None;
+            self.pad_type = None;
             return;
         }
         let _ = ring.read_at(&mut word, SNAPSHOT_SEQ);

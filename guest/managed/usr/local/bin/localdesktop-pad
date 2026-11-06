@@ -70,6 +70,43 @@ def link(path, target):
     os.symlink(target, path)
 
 
+# A Switch Pro Controller on Bluetooth, which libfakeinput serves as /dev/hidraw22 while the live pad
+# type is the Switch Pro (it then lists only that node in /sys/class/hidraw).
+SWITCH_MINOR = 22
+SWITCH_NODE = "hidraw%d" % SWITCH_MINOR
+SWITCH_HID = DEVICES + "/bluetooth/0005:057E:2009.0007"
+SWITCH_HIDRAW = SWITCH_HID + "/hidraw/" + SWITCH_NODE
+SWITCH_MAC = "02:4c:44:00:00:06"
+# The same as libfakeinput's kSwitchProReportDescriptor.
+SWITCH_REPORT_DESCRIPTOR = bytes([
+    0x05, 0x01, 0x09, 0x05, 0xa1, 0x01, 0x06, 0x01, 0xff,
+    0x85, 0x21, 0x09, 0x21, 0x15, 0x00, 0x26, 0xff, 0x00, 0x75, 0x08, 0x95, 0x3f, 0x81, 0x02,
+    0x85, 0x30, 0x09, 0x30, 0x95, 0x3f, 0x81, 0x02,
+    0x85, 0x31, 0x09, 0x31, 0x95, 0x3f, 0x81, 0x02,
+    0x85, 0x3f, 0x09, 0x3f, 0x95, 0x3f, 0x81, 0x02,
+    0x85, 0x01, 0x09, 0x01, 0x95, 0x3f, 0x91, 0x02,
+    0x85, 0x10, 0x09, 0x10, 0x95, 0x3f, 0x91, 0x02,
+    0x85, 0x11, 0x09, 0x11, 0x95, 0x3f, 0x91, 0x02,
+    0x85, 0x12, 0x09, 0x12, 0x95, 0x3f, 0x91, 0x02,
+    0xc0])
+
+
+def describe_switch_pro():
+    write(SWITCH_HID + "/uevent", "DRIVER=hid-generic\nHID_ID=0005:0000057E:00002009\nHID_NAME=Pro Controller\n"
+          "HID_PHYS=bluetooth-droiddeck-6\nHID_UNIQ=%s\nMODALIAS=hid:b0005g0001v0000057Ep00002009\n" % SWITCH_MAC)
+    write(SWITCH_HID + "/report_descriptor", SWITCH_REPORT_DESCRIPTOR)
+    link(SWITCH_HID + "/subsystem", "/sys/bus/hid")
+    write(SWITCH_HIDRAW + "/uevent", "MAJOR=%d\nMINOR=%d\nDEVNAME=%s\n" % (MAJOR, SWITCH_MINOR, SWITCH_NODE))
+    write(SWITCH_HIDRAW + "/dev", "%d:%d\n" % (MAJOR, SWITCH_MINOR))
+    link(SWITCH_HIDRAW + "/subsystem", "/sys/class/hidraw")
+    link(SWITCH_HIDRAW + "/device", SWITCH_HID)
+    try:
+        link("/sys/dev/char/%d:%d" % (MAJOR, SWITCH_MINOR), SWITCH_HIDRAW)
+    except OSError as error:
+        print("localdesktop-pad: /sys/dev/char/%d:%d not linked (%s)" % (MAJOR, SWITCH_MINOR, error), file=sys.stderr)
+    write("/run/udev/data/c%d:%d" % (MAJOR, SWITCH_MINOR), "I:1\nE:ID_INPUT=1\nE:ID_INPUT_JOYSTICK=1\n")
+
+
 def describe():
     write(USB + "/uevent", "DEVTYPE=usb_device\nPRODUCT=28de/1205/100\nTYPE=0/0/0\nBUSNUM=001\nDEVNUM=002\n")
     for name, value in (("idVendor", "28de"), ("idProduct", "1205"), ("bcdDevice", "0100"),
@@ -174,6 +211,7 @@ def main(args):
     command, rest = args[0], args[1:]
     if command == "setup":
         describe()
+        describe_switch_pro()
         create_ring()
         clear_stale_pads()
         return

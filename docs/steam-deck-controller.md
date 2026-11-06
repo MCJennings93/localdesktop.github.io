@@ -72,6 +72,16 @@ and Android refuses apps udev's netlink socket, so SDL dropped joystick support 
   a Steam that died.
 - libfakeinput's `/sys/class` listing stand-in now serves every process, not only the client.
 
+**Switch Pro Controller.** A press from a Nintendo controller sets the ring's pad type to Switch
+Pro (any other controller sets it back to the Deck), and libfakeinput then serves `/dev/hidraw22`
+(`0005:057E:2009`, Bluetooth) instead of the Deck, with only that node listed in
+`/sys/class/hidraw`; `localdesktop-pad setup` describes it under `/sys/devices/droiddeck/bluetooth`.
+It speaks Nintendo's protocol: full input reports 0x30 every 8 ms (buttons by label, 12-bit
+sticks, the IMU block), replies 0x21 to subcommands (device info, SPI flash reads of factory stick
+and IMU calibrations and colours, plain acks for modes and lights) and rumble from reports
+0x01/0x10. Capture tapped alone is Home; Capture + Minus is the Switch's Capture button (Android
+keeps Home for itself).
+
 **Gyro.** `ControllerMotion.java` reads the gyro and accelerometer of the controller connected last
 that has them, through `InputDevice.getSensorManager()` (Android 12+), while Steam wants motion
 (the IMU mode Steam sets on the Deck, which libfakeinput writes into the IMU block).
@@ -91,7 +101,8 @@ and unplugging with a button down. That covers Android to the ring only.
 
 ## Next
 
-1. Gyro: check Steam's controller test and gyro-to-mouse with a moving controller.
+1. Gyro: try gyro as mouse in a game's layout. Steam already follows the gyro (Settings →
+   Controller → Calibration & Advanced Settings → gyro calibration, with `ld-gyrotest --wave`).
 2. Touch controls drawn by the app's compositor, writing the ring; then Steam's touch controller
    (`0000:11fb`), whose layouts and per-game configs are Steam's.
 
