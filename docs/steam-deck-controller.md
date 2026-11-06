@@ -72,6 +72,13 @@ and Android refuses apps udev's netlink socket, so SDL dropped joystick support 
   a Steam that died.
 - libfakeinput's `/sys/class` listing stand-in now serves every process, not only the client.
 
+**Gyro.** `ControllerMotion.java` reads the gyro and accelerometer of the controller connected last
+that has them, through `InputDevice.getSensorManager()` (Android 12+), while Steam wants motion
+(the IMU mode Steam sets on the Deck, which libfakeinput writes into the IMU block).
+`src/android/app/controller_motion.rs` writes each reading into the IMU block in the Deck's axes
+(x, -z, y of the controller's x right, y up, z toward the player) and units. `ld-gyrotest` checks
+it with a virtual DualShock 4 made by Android's `hid` tool.
+
 A controller paired with Android joins the same ring: winit reports its axes and buttons as device
 events, so it no longer produces arrow keys or mouse motion, and `gamepad.rs` merges it with the
 on-screen gamepad by position. Mode (Capture on a Switch Pro) tapped alone is the Steam button for
@@ -84,7 +91,7 @@ and unplugging with a button down. That covers Android to the ring only.
 
 ## Next
 
-1. Gyro from a controller's motion sensors (Android's controller sensor API) into the IMU block.
+1. Gyro: check Steam's controller test and gyro-to-mouse with a moving controller.
 2. Touch controls drawn by the app's compositor, writing the ring; then Steam's touch controller
    (`0000:11fb`), whose layouts and per-game configs are Steam's.
 

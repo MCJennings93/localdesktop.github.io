@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""Does a controller's gyro reach the emulated Steam Deck controller?
+
+Needs no physical controller. Android's `hid` tool creates a virtual DualShock 4 (Android's CTS
+definition, data/sony_dualshock4_usb_register.json); the kernel's hid-sony gives it a motion-sensor
+device and Android a gyro and accelerometer through InputDevice.getSensorManager(), the path a real
+DualShock 4, DualSense or Switch controller (Linux 5.16+) takes. The test turns it about each of its
+axes in turn and reads the IMU block of the pad ring, which libfakeinput puts into the Deck's
+reports. It marks the ring as "Steam wants motion" while it runs and puts Steam's mode back after.
+The app must be in the foreground, with the session up.
+
+Usage: ld-gyrotest
+"""
+import json, os, re, subprocess, sys, time
+
+EXEC = os.path.expanduser("~/bin/ld-exec")
+HERE = os.path.dirname(os.path.realpath(__file__))
+RING = "/run/localdesktop-pad/fakeinput-rings/ring0"
+IMU = 64 + 4096 * 24
+RAW = 3000        # gyro counts in the DS4's report for each turn
+PHASE = 1.5       # seconds per turn
+# The DS4's gyro (x, y, z) in its report, with the Deck axis each should show up on: Android's x, y
+# and z become the Deck's x, -z and y (src/android/app/controller_motion.rs).
+TURNS = [("ds4 x", (RAW, 0, 0), 0, +1), ("ds4 y", (0, RAW, 0), 2, +1), ("ds4 z", (0, 0, RAW), 1, -1)]
+
+# Runs in the guest: "mode" prints Steam's IMU mode word, "mode N" sets it, "watch SECONDS" prints
+# the IMU block every 20 ms (time, seq, accel x y z, gyro x y z).
+HELPER = """import struct, sys, time
+RING, IMU = "%s", %d
+f = open(RING, "r+b", buffering=0)
+if sys.argv[1] == "mode":
+    f.seek(IMU + 4)
+    if len(sys.argv) > 2:
+        f.write(struct.pack("<I", int(sys.argv[2])))
+    else:
+        print(struct.unpack("<I", f.read(4))[0])
+elif sys.argv[1] == "watch":
+    start = time.time()
+    while time.time() - start < float(sys.argv[2]):
+        f.seek(IMU); b = f.read(28)
+        seq, = struct.unpack("<Q", b[8:16]); a = struct.unpack("<3h", b[16:22]); g = struct.unpack("<3h", b[22:28])
+        print("%%.3f %%d %%d %%d %%d %%d %%d %%d" %% ((time.time() - start, seq) + a + g), flush=True)
+        time.sleep(0.02)
+""" % (RING, IMU)
+HELPER_PATH = "/tmp/ld-gyrotest.py"
+
+
+def install_helper():
+    subprocess.run(["adb", "shell", "run-as io.github.localdesktop sh -c 'cat > files/arch%s'" % HELPER_PATH],
+                   input=HELPER, text=True, check=True)
+
+
+def le16(value):
+    value &= 0xffff
+    return [value & 0xff, value >> 8]
+
+
+def report(gyro, accel=(0, 8192, 0)):  # accel: about 1 g up (y), the controller held level
+    data = [0x01, 0x80, 0x80, 0x80, 0x80, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+    for value in gyro + accel:
+        data += le16(value)
+    data += [0] * (64 - len(data))
+    data[30] = 0x1b  # cable connected, battery full
+    return {"id": 1, "command": "report", "report": data}
+
+
+def imu_mode(value=None):
+    if value is None:
+        out = subprocess.run([EXEC, "python3 %s mode" % HELPER_PATH], capture_output=True, text=True).stdout
+        return int(out.split()[-1])
+    subprocess.run([EXEC, "python3 %s mode %d" % (HELPER_PATH, value)], check=True)
+
+
+def main():
+    subprocess.run(["adb", "shell", "am start -n io.github.localdesktop/android.app.NativeActivity"], capture_output=True)
+    time.sleep(1)
+    subprocess.run(["adb", "logcat", "-c"])
+    register = open(os.path.join(HERE, "data", "sony_dualshock4_usb_register.json")).read()
+    # The hid tool reads JSON objects one after another; the CTS file has hex numbers, which it accepts.
+    install_helper()
+    saved = imu_mode()
+    imu_mode(0x8000_0000 | 0x1f)
+    duration = 3.0 + PHASE * (len(TURNS) + 1)
+    watch = subprocess.Popen([EXEC, "python3 %s watch %f" % (HELPER_PATH, duration + 2)], stdout=subprocess.PIPE, text=True)
+    hid = subprocess.Popen(["adb", "shell", "hid", "-"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, text=True)
+    try:
+        hid.stdin.write(register + "\n")
+        hid.stdin.flush()
+        time.sleep(3.0)  # Android attaches the sensors; ControllerMotion polls Steam's wish twice a second
+        marks = []
+        start = time.time()
+        for name, gyro, _, _ in TURNS + [("still", (0, 0, 0), None, None)]:
+            marks.append((name, time.time() - start))
+            end = time.time() + PHASE
+            while time.time() < end:
+                hid.stdin.write(json.dumps(report(gyro)) + "\n")
+                hid.stdin.flush()
+                time.sleep(0.01)
+        samples = [list(map(float, line.split())) for line in watch.communicate()[0].splitlines() if re.match(r"^[0-9.]+ ", line)]
+    finally:
+        hid.stdin.close()
+        hid.wait()
+        imu_mode(saved)
+    log = subprocess.run(["adb", "logcat", "-d", "-s", "ControllerMotion"], capture_output=True, text=True).stdout
+    print("\n".join(line for line in log.splitlines() if "ControllerMotion" in line) or "no ControllerMotion log lines")
+    if not samples:
+        sys.exit("FAIL: could not read the ring")
+    # Each sample's dominant Deck gyro axis (or still), runs of at least 5 samples (100 ms), in order.
+    def label(sample):
+        g = sample[5:8]
+        axis = max(range(3), key=lambda k: abs(g[k]))
+        if abs(g[axis]) < 50:
+            return "still"
+        if abs(g[axis]) < 200 or any(abs(g[k]) > abs(g[axis]) / 4 for k in range(3) if k != axis):
+            return "mixed"
+        return "deck %s%s" % ("xyz"[axis], "+" if g[axis] > 0 else "-")
+    runs = []
+    for sample in samples:
+        name = label(sample)
+        if runs and runs[-1][0] == name:
+            runs[-1][1].append(sample)
+        else:
+            runs.append([name, [sample]])
+    seen = [(name, group) for name, group in runs if len(group) >= 5 and name not in ("mixed",)]
+    order = [name for name, _ in seen if name != "still"]
+    want = ["deck %s%s" % ("xyz"[axis], "+" if sign > 0 else "-") for _, _, axis, sign in TURNS]
+    print("seen:", ", ".join("%s x%d" % (name, len(group)) for name, group in seen))
+    failures = 0
+    for (name, _, _, _), expected in zip(TURNS, want):
+        group = next((g for n, g in seen if n == expected), None)
+        ok = group is not None
+        failures += not ok
+        if ok:
+            g = [sum(s[5 + k] for s in group) / len(group) for k in range(3)]
+            a = [sum(s[2 + k] for s in group) / len(group) for k in range(3)]
+            print("PASS %s -> %s: deck gyro %6.0f %6.0f %6.0f, accel %6.0f %6.0f %6.0f" % (name, expected, *g, *a))
+        else:
+            print("FAIL %s: never showed as %s" % (name, expected))
+    if order != want:
+        print("FAIL order: %s, want %s" % (order, want))
+        failures += 1
+    if not seen or seen[-1][0] != "still":
+        print("FAIL: the gyro did not come back to still")
+        failures += 1
+    print("FAIL" if failures else "PASS")
+    sys.exit(1 if failures else 0)
+
+
+if __name__ == "__main__":
+    main()

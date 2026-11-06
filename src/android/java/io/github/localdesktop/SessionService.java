@@ -48,6 +48,7 @@ public final class SessionService extends Service {
             public void run() {
                 watchNetwork(activity);
                 NotificationBridge.start(activity);
+                ControllerMotion.start(activity);
                 NotificationAccessPrompt.showIfNeeded(activity);
                 if (Build.VERSION.SDK_INT >= 33
                         && activity.checkSelfPermission(NOTIFICATIONS_PERMISSION) != PackageManager.PERMISSION_GRANTED) {

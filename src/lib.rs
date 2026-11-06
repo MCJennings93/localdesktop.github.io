@@ -9,6 +9,7 @@ pub mod android {
     pub mod main;
     pub mod app {
         pub mod build;
+        pub mod controller_motion;
         pub mod run;
         pub mod session_service;
     }
