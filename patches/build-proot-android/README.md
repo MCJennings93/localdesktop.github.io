@@ -20,6 +20,15 @@ was current on March 31, 2026: `ab2e3464d04483b98a0614b470f3f8950d5a6468`
 (committed on February 21, 2026). This repo still carries a small set of
 downstream Android/APK build patches on top of that source snapshot.
 
+Upstream's `src/extension/fake_id0/chmod.c`: `chmod` on a file outside the guest rootfs is still
+dropped, except on the app's own files (a directory bound into the guest, such as `/home`), so a
+script or binary written there can be made executable.
+
+And upstream's `src/extension/fake_id0/fake_id0.c`: `fstat` on a socket, eventfd or other
+descriptor that isn't a file gets the real `fstat`, instead of a `stat` of its `/proc/self/fd` link
+(`socket:[N]`), which fails. Node checks its standard streams with `fstat`, and a child process
+gets sockets for them, so every Node or Electron child process aborted at startup.
+
 See https://github.com/green-green-avk/proot for more info.
 
 ## Performance patches (2026-10-23)

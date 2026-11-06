@@ -11,12 +11,14 @@ mod output_state;
 mod watcher;
 mod winit_backend;
 
+pub use keymap::physicalkey_to_scancode;
 pub use output_state::write_guest_output_state;
 
 pub use compositor::{Compositor, State};
 pub use event_centralizer::{centralize, centralize_injected_keyboard, CentralizedEvent};
 pub use event_handler::{
-    dispatch_clients, handle, idle, on_vsync, start_frame_loop, window_hidden, window_shown,
+    dispatch_clients, handle, idle, on_external_pointer, on_vsync, paint_trackpad, set_keyboard_inset,
+    start_frame_loop, window_hidden, window_shown,
 };
 pub use frame_clock::FrameClock;
 pub use gamepad::Gamepad;
@@ -25,7 +27,7 @@ pub use winit_backend::{bind, WinitGraphicsBackend};
 
 use smithay::{
     backend::renderer::gles::GlesRenderer,
-    utils::{Clock, Monotonic},
+    utils::{Clock, Logical, Monotonic, Point},
 };
 use std::collections::HashMap;
 use winit::dpi::PhysicalPosition;
@@ -38,6 +40,8 @@ pub enum TouchMode {
     Undecided,
     /// Moved past touch slop before the long press fired.
     Scroll,
+    /// As a trackpad: one finger moved past touch slop, so it moves the cursor.
+    Move,
     /// Long-press timeout elapsed without moving; no button sent yet.
     LongPress,
     /// Moved after a long press: left button held down.
@@ -73,6 +77,12 @@ pub struct WaylandBackend {
     pub native_touch: bool,
     /// The on-screen gamepad shown in Game Mode, which takes the touches on its controls.
     pub gamepad: Gamepad,
+    /// Most fingers down at once during the current gesture.
+    pub touch_fingers: usize,
+    /// Where the trackpad has moved the cursor to on the external display.
+    pub cursor_position: Point<f64, Logical>,
+    /// Buttons held by a mouse on the external display (`MotionEvent.getButtonState()`).
+    pub external_buttons: i32,
     /// Wakes the event loop for client requests; started on the first resume.
     pub watcher: Option<WaylandWatcher>,
     /// Vsync source; created on the first resume, on the thread that owns the looper.
@@ -81,6 +91,8 @@ pub struct WaylandBackend {
     pub rendered_since_vsync: bool,
     /// When frame callbacks last went out (see `release_frame_callbacks`).
     pub callbacks_released_at: Option<std::time::Instant>,
+    /// How much of the bottom of the phone's screen the Android keyboard covers, in pixels.
+    pub keyboard_inset: i32,
 }
 
 impl WaylandBackend {
@@ -91,5 +103,20 @@ impl WaylandBackend {
         self.touch_mode = TouchMode::Undecided;
         self.touch_down_position = None;
         self.touch_down_time = None;
+        self.touch_fingers = 0;
+    }
+
+    /// Whether the phone's own window is there to draw to (not while the app is in the background).
+    pub fn window_visible(&self) -> bool {
+        self.graphic_renderer
+            .as_ref()
+            .is_some_and(|winit| winit.window_visible())
+    }
+
+    /// Whether the desktop is on an external monitor, with the phone as its trackpad.
+    pub fn is_trackpad(&self) -> bool {
+        self.graphic_renderer
+            .as_ref()
+            .is_some_and(|winit| winit.external_surface().is_some())
     }
 }

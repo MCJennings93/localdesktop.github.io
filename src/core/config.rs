@@ -1,41 +1,51 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::{
     fs::{self, OpenOptions},
     io::Write,
+    path::Path,
+    sync::OnceLock,
 };
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Where the Arch Linux filesystem lives: `arch` in the app's files directory, which Android names
-/// after the package in manifest.yaml, so builds under other package names keep their own. Set
-/// once at startup (see `set_arch_fs_root`). proot's link2symlink records this path in the links
-/// it creates, so it must be the same canonical path at every start.
-#[cfg(not(test))]
-static ARCH_FS_ROOT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+static ARCH_FS_ROOT: OnceLock<String> = OnceLock::new();
 
-/// Sets [`arch_fs_root`] from Android's files directory (`getFilesDir`, `/data/user/0/<package>/files`,
-/// resolved to its canonical `/data/data/<package>/files`).
-#[cfg(not(test))]
-pub fn set_arch_fs_root(files_dir: &std::path::Path) {
-    let files_dir = fs::canonicalize(files_dir).unwrap_or_else(|_| files_dir.to_path_buf());
-    let root = files_dir.join("arch").to_string_lossy().into_owned();
-    // The bundled libxkbcommon (patches/build-libxkbcommon) is built with the main package's
-    // paths; these point it at this install's keymaps and compose tables instead.
-    std::env::set_var("XKB_CONFIG_ROOT", format!("{root}/usr/share/X11/xkb"));
-    std::env::set_var("XLOCALEDIR", format!("{root}/usr/share/X11/locale"));
-    let _ = ARCH_FS_ROOT.set(root);
+/// Decide where the Arch Linux FS lives, from the app's files dir (`Context.getFilesDir()`).
+///
+/// `/data/data/<package>` only points at the owner's (user 0) storage, so in a secondary user
+/// or Private Space the FS must live under the files dir Android gives that user instead.
+/// When `/data/data/<package>/files` is this user's files dir, keep that historical path as is,
+/// because PRoot bakes absolute host paths into the FS (e.g. link2symlink).
+pub fn init_arch_fs_root(files_dir: &Path) {
+    let root = files_dir
+        .parent()
+        .and_then(|app_dir| app_dir.file_name())
+        .map(|package| Path::new("/data/data").join(package).join("files"))
+        .filter(|legacy_files_dir| {
+            match (
+                fs::canonicalize(legacy_files_dir),
+                fs::canonicalize(files_dir),
+            ) {
+                (Ok(legacy), Ok(current)) => legacy == current,
+                _ => false,
+            }
+        })
+        .unwrap_or_else(|| files_dir.to_path_buf())
+        .join("arch");
+    // Only the first call wins, the FS must not move while the app is running
+    let _ = ARCH_FS_ROOT.set(root.to_string_lossy().into_owned());
 }
 
+/// Absolute host path of the Arch Linux FS, set once at startup by [`init_arch_fs_root`].
 #[cfg(not(test))]
 pub fn arch_fs_root() -> &'static str {
     ARCH_FS_ROOT
         .get()
-        .expect("arch_fs_root() used before the application context set it")
+        .expect("Arch FS root is not initialized. Please make sure `ApplicationContext::build(&android_app);` is called in `android_main`.")
 }
-
 #[cfg(test)]
 pub fn arch_fs_root() -> &'static str {
-    "/data/local/tmp/arch"
+    ARCH_FS_ROOT.get_or_init(|| "/data/local/tmp/arch".to_string())
 }
 
 pub const ARCH_FS_ARCHIVE: &str = "https://github.com/termux/proot-distro/releases/download/v4.29.0/archlinux-aarch64-pd-v4.29.0.tar.xz";
@@ -63,38 +73,37 @@ pub const PIPEWIRE_GUEST_RUNTIME_DIR: &str = "/tmp";
 /// PipeWire-Pulse socket as seen from inside the proot guest.
 pub const PULSE_GUEST_SERVER: &str = "unix:/tmp/pulse/native";
 
-/// Make sure the config keys are all lowercase, and config values are single-line. Use \n for multi-line config values if needed
-/// If a key exists multiple time, the first entry is applied
-/// If a `try_` config exsists multiple time, the last entry is applied
-/// But in general, it is **invalid** to have duplicated config keys inside a TOML file
-pub const CONFIG_FILE: &str = "/etc/localdesktop/localdesktop.toml";
-
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+/// Settings from "Additional settings in the app" in Android's App info (see `utils::settings`),
+/// then the guest's own [`CONFIG_FILE`] on top (see [`apply_guest_config`]).
+#[derive(Debug, Clone)]
 pub struct LocalConfig {
-    #[serde(default)]
     pub user: UserConfig,
-
-    /// What happens if we don't assign this `#[serde(default)]` attribute?
-    /// The answer: If the user omits the `[command]` group, the WHOLE config fails to parse
-    /// => The default `[user]` group is applied (with `username=root`) even if the `[user]` settings are completely valid.
-    /// => So make sure that every config group has a `#[serde(default)]` attribute to avoid invalid sections breaking unrelated parts of the config.
-    #[serde(default)]
     pub command: CommandConfig,
-
-    #[serde(default)]
+    /// The Android keyboard types into the desktop, instead of Squeekboard.
+    pub android_keyboard: bool,
     pub input: InputConfig,
 }
 
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+impl Default for LocalConfig {
+    fn default() -> Self {
+        Self {
+            user: UserConfig::default(),
+            command: CommandConfig::default(),
+            android_keyboard: true,
+            input: InputConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
 pub struct InputConfig {
     /// Send touches to the session as real `wl_touch` events instead of emulating a mouse.
     /// For touch-first sessions such as Plasma Mobile, which drag, flick and handle edge swipes
     /// themselves; mouse emulation suits desktops like Xfce.
-    #[serde(default)]
     pub native_touch: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct UserConfig {
     pub username: String,
 }
@@ -107,13 +116,10 @@ impl Default for UserConfig {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct CommandConfig {
-    #[serde(default = "default_check")]
     pub check: String,
-    #[serde(default = "default_install")]
     pub install: String,
-    #[serde(default = "default_launch")]
     pub launch: String,
 }
 
@@ -140,6 +146,41 @@ impl Default for CommandConfig {
             launch: default_launch(),
         }
     }
+}
+
+/// Make sure the config keys are all lowercase, and config values are single-line. Use \n for multi-line config values if needed
+/// If a key exists multiple time, the first entry is applied
+/// If a `try_` config exsists multiple time, the last entry is applied
+/// But in general, it is **invalid** to have duplicated config keys inside a TOML file
+pub const CONFIG_FILE: &str = "/etc/localdesktop/localdesktop.toml";
+
+/// The keys the guest file may set; any it leaves out keep the settings page's value.
+#[derive(Debug, Default, Deserialize)]
+struct GuestConfig {
+    #[serde(default)]
+    user: GuestUser,
+    #[serde(default)]
+    command: GuestCommand,
+    #[serde(default)]
+    input: GuestInput,
+    android_keyboard: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct GuestUser {
+    username: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct GuestCommand {
+    check: Option<String>,
+    install: Option<String>,
+    launch: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct GuestInput {
+    native_touch: Option<bool>,
 }
 
 /// This function does 2 major tasks:
@@ -214,15 +255,48 @@ fn process_config_file(full_config_path: String) -> Vec<String> {
     effective_config
 }
 
-pub fn parse_config(full_config_path: String) -> LocalConfig {
+/// Applies the guest's own config file ([`CONFIG_FILE`], `full_config_path` on the host) over the
+/// settings page's: a guest installer can choose the session there (the Plasma Mobile one does),
+/// which the settings page, outside the guest, can't know about. A missing file changes nothing; a
+/// malformed one is ignored, so the settings page's values hold.
+pub fn apply_guest_config(config: &mut LocalConfig, full_config_path: String) {
     let lines = process_config_file(full_config_path);
-    let content = lines.join("\n");
-    if let Ok(config) = toml::from_str::<LocalConfig>(&content) {
-        return config;
+    if lines.is_empty() {
+        return;
     }
-    // Config malformed, use the default config and the user can modify it again
-    let default_config = LocalConfig::default();
-    default_config
+    let guest = match toml::from_str::<GuestConfig>(&lines.join("\n")) {
+        Ok(guest) => guest,
+        Err(error) => {
+            log::warn!("Ignoring the guest's {CONFIG_FILE}: {error}");
+            return;
+        }
+    };
+    if let Some(username) = guest.user.username {
+        config.user.username = username;
+    }
+    if let Some(check) = guest.command.check {
+        config.command.check = check;
+    }
+    if let Some(install) = guest.command.install {
+        config.command.install = install;
+    }
+    if let Some(launch) = guest.command.launch {
+        config.command.launch = launch;
+    }
+    if let Some(native_touch) = guest.input.native_touch {
+        config.input.native_touch = native_touch;
+    }
+    if let Some(android_keyboard) = guest.android_keyboard {
+        config.android_keyboard = android_keyboard;
+    }
+}
+
+/// The settings page's defaults with the guest file over them, for the tests.
+#[cfg(test)]
+fn parse_config(full_config_path: String) -> LocalConfig {
+    let mut config = LocalConfig::default();
+    apply_guest_config(&mut config, full_config_path);
+    config
 }
 
 #[cfg(test)]
@@ -310,6 +384,35 @@ mod tests {
                 );
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod guest_override_tests {
+    use super::*;
+
+    #[test]
+    fn keys_the_guest_leaves_out_keep_the_settings_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("localdesktop.toml");
+        fs::write(&path, "[input]\nnative_touch = true\n").unwrap();
+        let mut config = LocalConfig::default();
+        config.command.launch = "from-the-settings-page".to_string();
+        apply_guest_config(&mut config, path.to_string_lossy().into_owned());
+        assert!(config.input.native_touch);
+        assert_eq!(config.command.launch, "from-the-settings-page");
+    }
+
+    #[test]
+    fn missing_or_malformed_files_change_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = LocalConfig::default();
+        apply_guest_config(&mut config, dir.path().join("none.toml").to_string_lossy().into_owned());
+        assert_eq!(config.command.launch, LocalConfig::default().command.launch);
+        let bad = dir.path().join("bad.toml");
+        fs::write(&bad, "[command\nlaunch = ").unwrap();
+        apply_guest_config(&mut config, bad.to_string_lossy().into_owned());
+        assert_eq!(config.command.launch, LocalConfig::default().command.launch);
     }
 }
 

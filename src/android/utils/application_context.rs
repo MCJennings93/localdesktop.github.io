@@ -1,6 +1,6 @@
 use crate::{
-    android::utils::ndk::run_in_jvm,
-    core::config::{arch_fs_root, parse_config, set_arch_fs_root, LocalConfig, CONFIG_FILE},
+    android::utils::{ndk::run_in_jvm, settings},
+    core::config::{apply_guest_config, arch_fs_root, init_arch_fs_root, LocalConfig, CONFIG_FILE},
 };
 use jni::{
     objects::{JObject, JString},
@@ -31,10 +31,21 @@ impl ApplicationContext {
 
         let cache_dir = Self::get_path(&mut env, &activity, "getCacheDir");
         let data_dir = Self::get_path(&mut env, &activity, "getFilesDir");
-        set_arch_fs_root(&data_dir);
         let native_library_dir = Self::get_native_library_dir(&mut env, &activity);
-        let full_config_path = format!("{}{}", arch_fs_root(), CONFIG_FILE);
-        let local_config = parse_config(full_config_path);
+        init_arch_fs_root(&data_dir);
+        // libxkbcommon is built with the owner's (user 0) Arch FS paths, point it at this user's
+        std::env::set_var(
+            "XKB_CONFIG_ROOT",
+            format!("{}/usr/share/X11/xkb", arch_fs_root()),
+        );
+        std::env::set_var(
+            "XLOCALEDIR",
+            format!("{}/usr/share/X11/locale", arch_fs_root()),
+        );
+        // The settings page in App info, then the guest's own file over it (a guest installer, such
+        // as the Plasma Mobile one, chooses the session there).
+        let mut local_config = settings::load(&mut env, &activity);
+        apply_guest_config(&mut local_config, format!("{}{}", arch_fs_root(), CONFIG_FILE));
         let permission_all_files_access = Self::is_all_files_access_granted(android_app);
 
         {
