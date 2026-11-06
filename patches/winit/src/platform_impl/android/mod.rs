@@ -931,6 +931,10 @@ impl DeviceId {
     pub const fn dummy() -> Self {
         DeviceId(0)
     }
+
+    pub const fn android_id(&self) -> i32 {
+        self.0
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

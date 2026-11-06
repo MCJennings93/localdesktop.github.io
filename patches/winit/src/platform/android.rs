@@ -70,6 +70,7 @@
 //! 4. Pass a clone of the `AndroidApp` that your application receives to Winit when building your
 //!    event loop (as shown above).
 
+use crate::event::DeviceId;
 use crate::event_loop::{ActiveEventLoop, EventLoop, EventLoopBuilder};
 use crate::window::{Window, WindowAttributes};
 
@@ -113,6 +114,18 @@ impl WindowExtAndroid for Window {
 impl ActiveEventLoopExtAndroid for ActiveEventLoop {
     fn android_app(&self) -> &AndroidApp {
         &self.p.app
+    }
+}
+
+/// Additional methods on [`DeviceId`] that are specific to Android.
+pub trait DeviceIdExtAndroid {
+    /// Android's id for the input device (`InputDevice.getId()`), for looking the device up.
+    fn android_id(&self) -> i32;
+}
+
+impl DeviceIdExtAndroid for DeviceId {
+    fn android_id(&self) -> i32 {
+        self.0.android_id()
     }
 }
 

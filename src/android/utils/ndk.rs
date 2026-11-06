@@ -210,3 +210,27 @@ pub fn long_press_timeout_ms(android_app: &AndroidApp) -> u64 {
     .map(|timeout| timeout.max(0) as u64)
     .unwrap_or(500)
 }
+
+/// An input device's USB vendor id (`InputDevice.getVendorId()`), or None if the device is gone.
+pub fn input_device_vendor(android_app: &AndroidApp, device_id: i32) -> Option<i32> {
+    run_in_jvm(
+        |env, _| {
+            let device = env
+                .call_static_method(
+                    "android/view/InputDevice",
+                    "getDevice",
+                    "(I)Landroid/view/InputDevice;",
+                    &[JValue::Int(device_id)],
+                )
+                .and_then(|it| it.l())
+                .ok()
+                .filter(|device| !device.is_null())?;
+            let vendor = env.call_method(device, "getVendorId", "()I", &[]).and_then(|it| it.i());
+            if vendor.is_err() {
+                let _ = env.exception_clear();
+            }
+            vendor.ok()
+        },
+        android_app.clone(),
+    )
+}

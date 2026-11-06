@@ -2,7 +2,9 @@
 //! served to Steam by libfakeinput): physical controllers paired with Android, and the on-screen
 //! gamepad, whose touches go to it instead of reaching the session. Both write the ring together.
 //!
-//! A physical controller's buttons are the Deck's by position. Android keeps a controller's Home
+//! A physical controller's buttons are the Deck's by label: A confirms and B goes back on every
+//! controller. Android reports buttons by position (the bottom one is BUTTON_A), which is the label
+//! everywhere but on Nintendo's controllers, so theirs are swapped back (A with B, X with Y). Android keeps a controller's Home
 //! button for itself, so the Steam button is its Mode button (Capture on a Switch Pro Controller).
 //! Tapped alone it's a tap of Steam; held with Select (Minus) it's Quick Access; held with another
 //! button it's Steam with that button, for Steam's chords.
@@ -96,6 +98,9 @@ struct Held {
 /// How long a tap of the Steam button stays down: long enough for libfakeinput's reports, every 4 ms.
 const STEAM_TAP: Duration = Duration::from_millis(80);
 
+/// Nintendo's USB vendor id, also used by controllers in Switch mode.
+const NINTENDO: i32 = 0x057e;
+
 // Android's KEYCODE_* and AXIS_* numbers.
 const KEY_DPAD_UP: u32 = 19;
 const KEY_DPAD_DOWN: u32 = 20;
@@ -179,6 +184,8 @@ pub struct Gamepad {
     controller: Controller,
     /// What was last written for the controller, to skip writes for events that changed nothing.
     controller_axes: [i16; 8],
+    /// Whether each Android input device is a Nintendo controller, looked up once.
+    nintendo: HashMap<i32, bool>,
     size: (i32, i32),
     controls: Vec<Control>,
     textures: Option<Textures>,
@@ -195,6 +202,17 @@ pub struct Gamepad {
     last_stick_tap: HashMap<usize, Instant>,
 }
 
+/// A Nintendo controller's button by its label: Android numbers it by position.
+fn by_label(keycode: u32) -> u32 {
+    match keycode {
+        KEY_A => KEY_B,
+        KEY_B => KEY_A,
+        KEY_X => KEY_Y,
+        KEY_Y => KEY_X,
+        other => other,
+    }
+}
+
 fn guest(path: &str) -> PathBuf {
     PathBuf::from(arch_fs_root()).join(path.trim_start_matches('/'))
 }
@@ -204,6 +222,7 @@ impl Gamepad {
         Gamepad {
             controller: Controller::default(),
             controller_axes: [0; 8],
+            nintendo: HashMap::new(),
             size: (0, 0),
             controls: Vec::new(),
             textures: None,
@@ -249,9 +268,22 @@ impl Gamepad {
         }
     }
 
-    /// A physical controller's button, by Android keycode. Returns a delay if a tap of Steam began:
-    /// [`Self::end_steam_tap`] ends it after that.
-    pub fn controller_button(&mut self, keycode: u32, pressed: bool) -> Option<Duration> {
+    /// A physical controller's button, by Android device id and keycode. `vendor` looks up the
+    /// device's USB vendor id, the first time the device is seen. Returns a delay if a tap of Steam
+    /// began: [`Self::end_steam_tap`] ends it after that.
+    pub fn controller_button(
+        &mut self,
+        device: i32,
+        keycode: u32,
+        pressed: bool,
+        vendor: impl FnOnce() -> Option<i32>,
+    ) -> Option<Duration> {
+        let nintendo = *self.nintendo.entry(device).or_insert_with(|| {
+            let vendor = vendor();
+            log::info!("gamepad: controller {device}, vendor {vendor:04x?}");
+            vendor == Some(NINTENDO)
+        });
+        let keycode = if nintendo { by_label(keycode) } else { keycode };
         let controller = &mut self.controller;
         let mut tap = None;
         let bit = match keycode {

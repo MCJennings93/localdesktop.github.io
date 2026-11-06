@@ -24,6 +24,7 @@ use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::platform::android::activity::AndroidApp;
+use winit::platform::android::DeviceIdExtAndroid;
 use winit::window::WindowId;
 
 fn configure_output(backend: &mut crate::android::backend::wayland::WaylandBackend) {
@@ -179,7 +180,7 @@ impl ApplicationHandler<AppUserEvent> for PolarBearApp {
         }
     }
 
-    fn device_event(&mut self, _event_loop: &ActiveEventLoop, _device: DeviceId, event: DeviceEvent) {
+    fn device_event(&mut self, _event_loop: &ActiveEventLoop, device: DeviceId, event: DeviceEvent) {
         let PolarBearBackend::Wayland(backend) = &mut self.backend else {
             return;
         };
@@ -187,7 +188,10 @@ impl ApplicationHandler<AppUserEvent> for PolarBearApp {
             DeviceEvent::Motion { axis, value } => backend.gamepad.controller_axis(axis, value),
             DeviceEvent::Button { button, state } => {
                 let pressed = state == ElementState::Pressed;
-                if let Some(delay) = backend.gamepad.controller_button(button, pressed) {
+                let android_app = &self.frontend.android_app;
+                let device = device.android_id();
+                let vendor = || ndk::input_device_vendor(android_app, device);
+                if let Some(delay) = backend.gamepad.controller_button(device, button, pressed, vendor) {
                     let proxy = self.frontend.proxy.clone();
                     std::thread::spawn(move || {
                         std::thread::sleep(delay);
