@@ -9,7 +9,9 @@ axes in turn and reads the IMU block of the pad ring, which libfakeinput puts in
 reports. It marks the ring as "Steam wants motion" while it runs and puts Steam's mode back after.
 The app must be in the foreground, with the session up.
 
-Usage: ld-gyrotest
+Usage: ld-gyrotest              the check above
+       ld-gyrotest --wave SECONDS  keep the virtual controller turning, yaw then pitch then roll,
+                                   back and forth (2 s each way), to watch Steam's controller test
 """
 import json, os, re, subprocess, sys, time
 
@@ -71,7 +73,34 @@ def imu_mode(value=None):
     subprocess.run([EXEC, "python3 %s mode %d" % (HELPER_PATH, value)], check=True)
 
 
+def wave(seconds):
+    import math
+    register = open(os.path.join(HERE, "data", "sony_dualshock4_usb_register.json")).read()
+    install_helper()
+    hid = subprocess.Popen(["adb", "shell", "hid", "-"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, text=True)
+    hid.stdin.write(register + "\n")
+    hid.stdin.flush()
+    time.sleep(3.0)
+    print("turning for %d s: yaw (ds4 y), pitch (ds4 x), roll (ds4 z), 6 s each" % seconds, flush=True)
+    start = time.time()
+    try:
+        while time.time() - start < seconds:
+            t = time.time() - start
+            phase = int(t // 6) % 3
+            value = int(RAW * math.sin(t * math.pi / 2))
+            gyro = [(0, value, 0), (value, 0, 0), (0, 0, value)][phase]
+            hid.stdin.write(json.dumps(report(gyro)) + "\n")
+            hid.stdin.flush()
+            time.sleep(0.01)
+    finally:
+        hid.stdin.close()
+        hid.wait()
+    print("done", flush=True)
+
+
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "--wave":
+        return wave(float(sys.argv[2]))
     subprocess.run(["adb", "shell", "am start -n io.github.localdesktop/android.app.NativeActivity"], capture_output=True)
     time.sleep(1)
     subprocess.run(["adb", "logcat", "-c"])
