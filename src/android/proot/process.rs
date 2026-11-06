@@ -124,14 +124,18 @@ fn pad_sysfs_dir() -> std::path::PathBuf {
 
 /// Create the directories bound over `/sys/devices/droiddeck` and `/sys/class/hidraw`, where
 /// `/usr/local/bin/localdesktop-pad` describes the emulated Steam Deck controller (a hidraw device
-/// that `/usr/local/lib/libfakeinput.so` serves to Steam). Android has no hidraw devices the app
-/// may open, so the guest loses nothing under `/sys/class/hidraw`. Returns whether they can be bound.
+/// that `/usr/local/lib/libfakeinput.so` serves to Steam), and over `/sys/devices/virtual/input` and
+/// `/sys/class/input`, where libfakeinput describes each virtual pad Steam Input creates
+/// (`/dev/input/event16` and up) for games whose SDL finds pads through libudev. Android lets the
+/// guest open none of its own hidraw or input devices, so the guest loses nothing under them.
+/// Returns whether they can be bound.
 fn pad_sysfs() -> bool {
     static READY: OnceLock<bool> = OnceLock::new();
     *READY.get_or_init(|| {
         let base = pad_sysfs_dir();
-        fs::create_dir_all(base.join("devices")).is_ok()
-            && fs::create_dir_all(base.join("hidraw")).is_ok()
+        ["devices", "hidraw", "input-devices", "input-class"]
+            .iter()
+            .all(|dir| fs::create_dir_all(base.join(dir)).is_ok())
     })
 }
 
@@ -285,7 +289,9 @@ impl ArchProcess {
             let base = pad_sysfs_dir().display().to_string();
             process
                 .arg(format!("--bind={base}/devices:/sys/devices/droiddeck"))
-                .arg(format!("--bind={base}/hidraw:/sys/class/hidraw"));
+                .arg(format!("--bind={base}/hidraw:/sys/class/hidraw"))
+                .arg(format!("--bind={base}/input-devices:/sys/devices/virtual/input"))
+                .arg(format!("--bind={base}/input-class:/sys/class/input"));
         }
 
         if masked_cpuinfo() {

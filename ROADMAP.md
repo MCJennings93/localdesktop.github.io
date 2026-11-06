@@ -61,12 +61,18 @@ Open:
 
 ### 3. Steam and games
 1. **Controller input:**
-   - **Physical controllers.** Built: a controller paired with Android (e.g. a Switch Pro
-     Controller) becomes the Steam Deck controller Steam reads, merged into the pad ring.
-     `ld-padtest` passes from Android to the ring. Still to check: Steam's UI reacting to it, with
-     someone watching, and a real controller.
-   - **Games see Steam Input's virtual pad.** Needs x86-64 libfakeinput in the FEX rootfs, plus
-     evdev sysfs.
+   - **Physical controllers.** Done: a controller paired with Android (e.g. a Switch Pro
+     Controller) becomes the Steam Deck controller Steam reads, merged into the pad ring, and works
+     in Steam's UI (tested with a real Switch Pro Controller). Nintendo controllers' buttons follow
+     their labels (A confirms, B goes back).
+   - **Games see Steam Input's virtual pad.** Done for Bastion (x86, FEX): the x86 libfakeinput is
+     preloaded into games, and games whose SDL finds pads only through libudev get a stand-in for
+     udev's netlink socket and sysfs/udev entries for each virtual pad
+     ([Steam Deck controller](docs/steam-deck-controller.md)). Follow-up: merge the ARM
+     `udev-netlink-shim` (KWin) with libfakeinput's `udevmon.c`, which do the same socket trick.
+   - **Gyro.** Next: read a controller's motion sensors through Android's controller sensor API and
+     feed them to the emulated Deck's gyro. Needs a kernel that exposes the controller's IMU (Linux
+     5.16+ hid-nintendo); the 5.15 test phone exposes none over Bluetooth.
    - **On-screen gamepad** (off by default). It stops drawing while still taking touches, its STEAM
      button doesn't open Steam's menu or the Quick Access Menu, and touching it flashes the screen.
 2. **Games at any resolution and aspect ratio.** On screens larger than 1920x1080, Steam's own

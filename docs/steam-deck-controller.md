@@ -57,6 +57,21 @@ On the PC, the x86-64 build was checked end to end in Debian bullseye: a test pr
 trigger past half → L2 `0x02`, Quick Access → high `0x40000`, d-pad up → `0x100`, sticks with
 the Deck's Y sign).
 
+**Games.** Steam Input hands a game its virtual pad, created through libfakeinput's fake
+`/dev/uinput` as `/dev/input/event16` and up, and the x86-64 libfakeinput (preloaded into games
+under FEX by `localdesktop-fex`) serves it. A newer SDL scans `/dev/input` (Steam sets
+`SDL_JOYSTICK_DISABLE_UDEV=1`). An SDL before 2.0.14 (Bastion's) finds pads only through libudev,
+and Android refuses apps udev's netlink socket, so SDL dropped joystick support altogether. For it:
+- `udevmon.c` (linked into libfakeinput, from DroidDeck) turns the refused netlink socket into a
+  Unix datagram pair answering bind, getsockname, setsockopt and recvmsg like netlink, and injects
+  add/remove messages (with `ID_INPUT_JOYSTICK`) when a virtual pad's node appears or goes.
+- libfakeinput writes each virtual pad's `/sys/devices/virtual/input/inputN/eventN` (capability
+  bitmaps from the uinput description), `/sys/class/input` links and `/run/udev/data` records
+  before the node appears, and removes them after. The app binds `files/pad-sysfs/input-devices`
+  and `input-class` over those sysfs directories. `localdesktop-pad setup` clears entries left by
+  a Steam that died.
+- libfakeinput's `/sys/class` listing stand-in now serves every process, not only the client.
+
 A controller paired with Android joins the same ring: winit reports its axes and buttons as device
 events, so it no longer produces arrow keys or mouse motion, and `gamepad.rs` merges it with the
 on-screen gamepad by position. Mode (Capture on a Switch Pro) tapped alone is the Steam button for
@@ -69,11 +84,8 @@ and unplugging with a button down. That covers Android to the ring only.
 
 ## Next
 
-1. Phone: see Steam's UI react to a controller, with someone watching, then try a real controller.
-   Steam already opens the emulated controller on `/dev/hidraw16`.
-2. Games: x86-64 libfakeinput in the FEX rootfs and the evdev sysfs, so Bastion sees Steam's
-   virtual pad.
-3. Touch controls drawn by the app's compositor, writing the ring; then Steam's touch controller
+1. Gyro from a controller's motion sensors (Android's controller sensor API) into the IMU block.
+2. Touch controls drawn by the app's compositor, writing the ring; then Steam's touch controller
    (`0000:11fb`), whose layouts and per-game configs are Steam's.
 
 ## Requirements for the on-screen gamepad

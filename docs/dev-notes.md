@@ -1335,3 +1335,60 @@ All work is committed, not pushed. See below for the installed build.
 - Plasma has no Xwayland (/tmp/.X11-unix mode, see 2026-11-04).
 - Yesterday's black screen didn't come back; cause never found.
 - ld-firstsize hasn't been run on the scale-fix build; unfolded at 2.625x not measured on it.
+Installed dev-04cae43 at the user's request (replaces dev-3a6b94f-scale-1).
+
+## 2026-11-05 ~15:00 — RESUME HERE: controller works in Steam's UI; games get no input yet (UNCOMMITTED)
+Committed through 04cae43, unpushed. Uncommitted work below; backup ~/localdesktop-bench/pad-games-20261105/ (uncommitted.patch, ringwatch.sh = live ring logger: `ringwatch.sh SECONDS`; sticks shown in tenths, triggers 0-255 and d-pad -1/0/1 raw).
+
+**Real Switch Pro Controller, Bluetooth, tested with the user watching Steam (Game Mode):** D-pad, A/B, Capture tap = Steam menu, Capture + Minus = Quick Access, sticks, L/R, ZL/ZR all reach the ring and Steam (user checked in Steam's controller test; L/R/triggers/right stick just do nothing in Steam's menus). Earlier "D-pad/ZL/ZR missing" was MY watcher bug (divided all axes by 3277), not the app.
+
+**Buttons by label (user's call: A confirms, B goes back), built + installed as dev-04cae43-padlabel-1 (APK in ~/localdesktop-bench/apks/), user confirmed "A and B are good":**
+- Android numbers buttons by position (hid-nintendo: B = BTN_SOUTH = KEYCODE_BUTTON_A). gamepad.rs swaps A/B and X/Y back for vendor 0x057e (Nintendo, also controllers in Switch mode). Vendor looked up once per device via JNI InputDevice.getDevice(id).getVendorId() (ndk::input_device_vendor); winit patch adds DeviceIdExtAndroid::android_id().
+- ld-padtest: Nintendo button names fixed to the real labels (B=0x130, A=0x131, X=0x133, Y=0x134) + a virtual Xbox One pad (045e:02ea) check that nothing is swapped. Full PASS on the phone; logcat shows "gamepad: controller N, vendor Some(057e)/Some(045e)".
+
+**Games (Bastion, x86 under FEX): no controller input. Found and fixed two causes, NOT yet confirmed working:**
+1. localdesktop-fex looked for x86 preloads in /usr/local/lib/droiddeck-fex (ours are in /usr/local/lib/localdesktop-fex) and only for names in /etc/ld.so.preload (we preload via LD_PRELOAD, which it strips as ARM). Now PRELOADS = /usr/local/lib/localdesktop-fex and host_preloads() also reads the environment's LD_PRELOAD.
+2. install_preloads/install_fonts wrote into the sniper runtime's files/, but FEX runs from the COPY ~/.local/share/localdesktop-fex/rootfs (rebuilt only when the runtimes change), so the copy never got them (our copy-instead-of-link difference from DroidDeck). Now both run on the root FEX uses, every launch.
+Both are hand-copied into the guest only; the next app restart puts the APK's old localdesktop-fex back until an APK is built.
+After fix 2 the user relaunched Bastion: still no input, but the phone was unplugged, so NOT checked whether libfakeinput loaded.
+
+**First thing next time (phone plugged in, Bastion running, launched AFTER re-copying localdesktop-fex if the app restarted):**
+1. `grep -c fakeinput /proc/<Bastion.bin pid>/maps` (was 0 before the fixes; wrappers show 4). Check rootfs: etc/ld.so.preload and lib/x86_64-linux-gnu/droiddeck/libfakeinput.so in ~/.local/share/localdesktop-fex/rootfs.
+2. pad.log: lines from a process other than "steam:" (the game opening /dev/input/event16).
+3. If loaded but still no input: how Bastion's SDL finds pads. Steam's virtual pad is published fine ("Microsoft X-Box 360 pad 0" 28de:11ff = /dev/input/event16, ring .uinput-event16 updating). With SDL_JOYSTICK_DISABLE_UDEV=1 (games inherit it) SDL scans /dev/input, which libfakeinput redirects. An SDL too old for that hint uses libudev, which needs (a) /sys/class/input + /sys/devices/virtual/input entries and /run/udev/data records (DroidDeck's InputSysfsComponent.kt, not ported: the doc's "Next 2"), and (b) a /sys/class listing: libfakeinput's listing stand-in (deck_listing_for) only applies to the Steam client (process_is_steam_client), and Android refuses to list /sys/class. Check Bastion's bundled SDL version first.
+Then: gyro (user's next item). The user also raised presenting each controller to Steam as itself (Switch Pro via an emulated Nintendo HID protocol, DS4/DualSense, Xbox) for separate players, Nintendo glyphs and gyro; libfakeinput has Deck/Steam Controller/Xbox/DS4/DualSense but no Switch Pro. Not chosen yet.
+
+**End of day 2026-11-05, nothing changed since the section above.** Resume tomorrow from "First thing next time".
+- Still open to ask the user: commit the A/B label change now (user-confirmed), or together with the game fix. Ask before committing. When committing, copy notes to docs/dev-notes.md (serial -> <adb-serial>), update ROADMAP + docs/steam-deck-controller.md.
+- If step 3 needs the udev path, port ~/src/DroidDeck/app/src/main/java/com/droiddeck/launcher/session/InputSysfsComponent.kt (read today). What it does:
+  - Watch FAKE_EVDEV_DIR with a FileObserver (event\d+, .uinput-event\d+.uevent). Show nodes >=16 only when a .uinput-eventN.uevent exists, and parse PRODUCT=bus/vid/pid/ver, NAME, PHYS, UNIQ from it.
+  - Per node, write devices/inputN/{uevent,name,phys,uniq,properties=0,id/{bustype,vendor,product,version} as %04x, capabilities/{ev,key,rel,abs,msc,sw,led,snd,ff}=0} and subsystem -> /sys/class/input. Then devices/inputN/eventN/{uevent "MAJOR=13 MINOR=64+N DEVNAME=input/eventN", dev "13:64+N"} with subsystem and device symlinks.
+  - Write the udev records /run/udev/data/{+input:inputN, c13:(64+N)} = "I:<us>\nE:ID_INPUT=1\nE:ID_INPUT_JOYSTICK=1\nE:ID_SERIAL=noserial\nG:seat\nG:uaccess\nQ:seat\nQ:uaccess\nV:1\n".
+  - Add the class symlinks class/inputN and class/eventN. Bind the devices dir -> /sys/devices/virtual/input and the class dir -> /sys/class/input. On stop, remove everything and delete stale pad records.
+  - In our app this belongs in Rust beside pad_sysfs (src/android/proot/process.rs) and the gamepad backend. A FileObserver equivalent is inotify on the fake-input dir.
+
+## 2026-11-06 ~10:10 — RESUME HERE: Bastion finds the pad now; in-game input still unconfirmed (UNCOMMITTED)
+Uncommitted on top of 04cae43 (with yesterday's A/B label + FEX preload fixes). Backup: ~/localdesktop-bench/pad-udev-20261106/ (uncommitted.patch + udevmon.c). Installed: dev-04cae43-udevpad-1 (APK in ~/localdesktop-bench/apks/), built from this tree.
+
+**Cause found:** Bastion bundles SDL hg-12373 (2018, pre-2.0.14: no SDL_JOYSTICK_DISABLE_UDEV, finds pads only via libudev). Android refuses the guest socket(AF_NETLINK, NETLINK_KOBJECT_UEVENT) (EACCES), so udev_monitor_new_from_netlink failed, SDL_UDEV_Init failed and the game's joystick subsystem never started (no input fd, x86 libudev not even mapped). Also /sys/class, /sys/class/input, /sys/devices/virtual/input are not listable.
+
+**Fix (shared layer, all libudev-SDL games):**
+1. guest/managed/usr/local/src/udevmon.c (new, from DroidDeck tools/linuxfs/preload/udevmon.c + bind/recvmsg hooks): netlink stand-in (socketpair) answering bind/getsockname/setsockopt/recvmsg; bl_udevmon_inject (libfakeinput already dlsym'd it for hidraw hotplug in Steam: now live); inotify watcher on FAKE_EVDEV_DIR injects add/remove with ID_INPUT_JOYSTICK for eventN (N>=16). Linked into libfakeinput.so (both arches); guest/build-fakeinput.sh compiles it (sources go in as a tar).
+2. fakeinput_steam.cpp: publish_input_sysfs/remove_input_sysfs around publish_uinput/unpublish_uinput/stale cleanup: /sys/devices/virtual/input/inputN{,/eventN}, real capability bitmaps from the uinput description, /sys/class/input links, /run/udev/data/{+input:inputN,c13:64+N}. deck_listing_for no longer Steam-only (games' libudev lists /sys/class from the stand-in).
+3. process.rs pad_sysfs: binds files/pad-sysfs/input-devices -> /sys/devices/virtual/input, input-class -> /sys/class/input. (ld-exec does NOT have these binds; use ld-run or run-as on files/pad-sysfs.)
+4. localdesktop-pad setup: listing class/input, clear_stale_pads().
+
+**Verified:** sysfs entries correct (EV=20000a, KEY=7cdb000000000000 0 0 0 0, like xpad). Bastion now opens .uinput-event16 (fd 23 joystick, fd 24 haptic) and reads name/id/bits/absinfo (pad.log "exe:" lines). Bastion's gamecontrollerdb has 03000000de280000ff11000001000000 Steam Virtual Gamepad = our GUID. Steam writes every press to the ring while Bastion is in front (uinputwatch.sh). Reading event16 through libfakeinput works on ARM (evread.sh) AND x86 under FEX (x86test/evread, injected presses via `localdesktop-pad tap A`): all events delivered.
+**User report:** "It received at least one input/response, but inputs now aren't taking effect."
+
+**Next (phone reconnected, Bastion running):** ask the user the 3 questions: what the one input was; whether menus respond to D-pad/stick/A/Start; Bastion's controls setting. If nothing after the first input: add read logging in read_input (per-fd count, rate-limited) to see whether the game keeps reading, and check the game opens with O_NONBLOCK. Tools in ~/localdesktop-bench/pad-games-20261105/: uinputwatch.sh SECS, evread.sh SECS (ARM), x86test/evread (x86, at guest /tmp/evread-x86; run with `ld-run "env $(localdesktop-pad env ...) FEX_ROOTFS=... FEX /tmp/evread-x86 N"`).
+Side note: the session LD_PRELOAD already lists /usr/local/lib/udev-netlink-shim.so (ARM) — check what it does vs udevmon.c before committing (possible duplicate).
+Still to ask: commit the A/B label change separately or with this. Ask before committing.
+
+## 2026-11-06 ~10:50 — Controller in games WORKS (Bastion); committing; next = gyro (sensor API)
+- User: with the "mouse" moved by touch, A and B work in Bastion. Bastion's menus are mouse-driven, so a pad alone can't move its cursor (Steam layout / gyro-to-mouse could).
+- Game read stats (temporary logging, removed before commit): Bastion reads the pad ~60/s, nonblocking, 32-event buffer, and received every press (464 events in the test).
+- Focus diagnostic: SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1 was set (guest-only) during the run where A/B worked, then reverted. X focus was on Bastion (xdotool getwindowfocus on :2 = Bastion, GAMESCOPE_FOCUSED_APP=107100), so it is probably not needed: CONFIRM next time Bastion runs without it (A/B still work?).
+- Duplicate: ARM udev-netlink-shim.so (KWin crash guard) sits before libfakeinput in Steam's LD_PRELOAD, so in Steam it answers socket() first and udevmon's stand-in stays idle there (same as before for Steam). x86 games have only udevmon. Follow-up in ROADMAP: merge them.
+- Gyro: this phone's kernel (5.15 GKI) has no hid-nintendo IMU device (getevent: only "Nintendo Switch Pro Controller", no "... IMU"; dumpsys input: no sensors; IMU support landed in Linux 5.16). Android SDK 36. User chose: Android controller sensor API path (InputDevice.getSensorManager, Bluetooth), knowing it can't be tested on this phone. USB-C raw path was offered and not chosen.
+- Commits requested by the user: three separate commits (A/B by label; FEX preloads; libudev/netlink pad support).

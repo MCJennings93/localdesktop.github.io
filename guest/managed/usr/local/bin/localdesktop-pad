@@ -13,6 +13,7 @@
 #   localdesktop-pad dpad up|down|left|right|none       localdesktop-pad state
 import mmap
 import os
+import shutil
 import struct
 import sys
 import time
@@ -38,6 +39,9 @@ ALIASES = {"LB": "L1", "RB": "R1", "SELECT": "VIEW", "BACK": "VIEW", "START": "M
            "HOME": "STEAM", "LS": "L3", "RS": "R3", "...": "QAM"}
 # Snapshot axes: left stick x/y, right stick x/y, right trigger, left trigger, d-pad x/y.
 LX, LY, RX, RY, RT, LT, HX, HY = range(8)
+
+INPUT_DEVICES, INPUT_CLASS, UDEV_DATA = "/sys/devices/virtual/input", "/sys/class/input", "/run/udev/data"
+EVENT_MINOR_BASE = 64
 
 MAJOR, MINOR = 240, 16
 NODE = "hidraw%d" % MINOR
@@ -93,8 +97,32 @@ def describe():
     except OSError as error:
         print("localdesktop-pad: /sys/dev/char/%d:%d not linked (%s)" % (MAJOR, MINOR, error), file=sys.stderr)
     write("/run/udev/data/c%d:%d" % (MAJOR, MINOR), "I:1\nE:ID_INPUT=1\nE:ID_INPUT_JOYSTICK=1\n")
-    for name in ("sys/bus", "sys/class", "sys/devices", "class/hidraw", "bus"):
+    # class/input: games' libudev finds Steam Input's virtual pads there (libfakeinput writes them).
+    for name in ("sys/bus", "sys/class", "sys/devices", "class/hidraw", "class/input", "bus"):
         os.makedirs(LISTING + "/" + name, exist_ok=True)
+
+
+def clear_stale_pads():
+    """Drop the sysfs and udev entries of virtual pads whose ring is gone (Steam died without removing
+    them): libfakeinput writes /sys/devices/virtual/input/inputN, /sys/class/input/{inputN,eventN} and
+    /run/udev/data/{+input:inputN,c13:64+N} for each /dev/input/eventN it creates."""
+    def gone(node):
+        return not os.path.exists("%s/.uinput-event%d" % (INPUT_DIR, node))
+    for name in os.listdir(INPUT_CLASS) if os.path.isdir(INPUT_CLASS) else ():
+        number = name.lstrip("inputevent")
+        if number.isdigit() and gone(int(number)):
+            os.unlink(INPUT_CLASS + "/" + name)
+    for name in os.listdir(INPUT_DEVICES) if os.path.isdir(INPUT_DEVICES) else ():
+        if name.startswith("input") and name[5:].isdigit() and gone(int(name[5:])):
+            shutil.rmtree(INPUT_DEVICES + "/" + name, ignore_errors=True)
+    for name in os.listdir(UDEV_DATA) if os.path.isdir(UDEV_DATA) else ():
+        node = None
+        if name.startswith("+input:input") and name[12:].isdigit():
+            node = int(name[12:])
+        elif name.startswith("c13:") and name[4:].isdigit() and int(name[4:]) >= EVENT_MINOR_BASE:
+            node = int(name[4:]) - EVENT_MINOR_BASE
+        if node is not None and gone(node):
+            os.unlink(UDEV_DATA + "/" + name)
 
 
 def create_ring():
@@ -147,6 +175,7 @@ def main(args):
     if command == "setup":
         describe()
         create_ring()
+        clear_stale_pads()
         return
     if command == "env":
         for name, value in (("FAKE_EVDEV_DIR", INPUT_DIR), ("FAKE_EVDEV_MEMFD_PATHS", "0=" + RING),

@@ -605,6 +605,125 @@ __attribute__((visibility("hidden"))) static bool process_alive(pid_t pid) {
   return pid > 0 && (kill(pid, 0) == 0 || errno == EPERM);
 }
 
+// Local Desktop: a game whose SDL finds pads only through libudev (SDL before 2.0.14 has no
+// SDL_JOYSTICK_DISABLE_UDEV) needs each virtual pad in sysfs and the udev database, as the kernel and
+// udev would show a uinput device: /sys/devices/virtual/input/inputN/eventN, /sys/class/input/{inputN,
+// eventN} and /run/udev/data/{+input:inputN,c13:M}. The app binds directories over
+// /sys/devices/virtual/input and /sys/class/input (Android lets the guest read neither). The entries
+// are written before /dev/input/eventN appears and removed after it goes, so a game watching for
+// that node (udevmon.c) finds them complete.
+static constexpr const char *INPUT_SYSFS_DEVICES = "/sys/devices/virtual/input";
+static constexpr const char *INPUT_SYSFS_CLASS = "/sys/class/input";
+static constexpr unsigned INPUT_MAJOR = 13, EVENT_MINOR_BASE = 64;
+
+__attribute__((visibility("hidden"))) static void sysfs_write(const std::string &path, const std::string &data) {
+  static auto my_open = reinterpret_cast<int (*)(const char *, int, ...)>(dlsym(RTLD_NEXT, "open"));
+  int fd = my_open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+  if (fd < 0) return;
+  if (write(fd, data.data(), data.size()) < 0) {}
+  syscall(SYS_close, fd);
+}
+
+__attribute__((visibility("hidden"))) static void sysfs_link(const std::string &path, const std::string &target) {
+  unlink(path.c_str());
+  if (symlink(target.c_str(), path.c_str()) < 0) {}
+}
+
+// A capability bitmap as sysfs prints it: unsigned longs in hex, most significant first, separated
+// by spaces, with leading zero words left out ("0" when empty).
+__attribute__((visibility("hidden"))) static std::string sysfs_bitmap(const uint8_t *bits, size_t bytes) {
+  constexpr size_t word = sizeof(unsigned long);
+  size_t words = (bytes + word - 1) / word;
+  std::string out;
+  bool started = false;
+  for (size_t i = words; i-- > 0;) {
+    unsigned long value = 0;
+    for (size_t b = 0; b < word && i * word + b < bytes; b++)
+      value |= static_cast<unsigned long>(bits[i * word + b]) << (8 * b);
+    if (!started && value == 0 && i > 0) continue;
+    char hex[24];
+    snprintf(hex, sizeof(hex), started ? " %lx" : "%lx", value);
+    out += hex;
+    started = true;
+  }
+  return out;
+}
+
+__attribute__((visibility("hidden"))) static void remove_input_sysfs(int node) {
+  std::string n = std::to_string(node);
+  std::string input = std::string(INPUT_SYSFS_DEVICES) + "/input" + n;
+  std::string event = input + "/event" + n;
+  unlink(("/run/udev/data/c13:" + std::to_string(EVENT_MINOR_BASE + node)).c_str());
+  unlink(("/run/udev/data/+input:input" + n).c_str());
+  unlink((std::string(INPUT_SYSFS_CLASS) + "/event" + n).c_str());
+  unlink((std::string(INPUT_SYSFS_CLASS) + "/input" + n).c_str());
+  for (const char *name : {"uevent", "dev", "subsystem", "device"}) unlink((event + "/" + name).c_str());
+  rmdir(event.c_str());
+  for (const char *name : {"bustype", "vendor", "product", "version"}) unlink((input + "/id/" + name).c_str());
+  rmdir((input + "/id").c_str());
+  for (const char *name : {"ev", "key", "rel", "abs", "msc", "sw", "led", "snd", "ff"})
+    unlink((input + "/capabilities/" + name).c_str());
+  rmdir((input + "/capabilities").c_str());
+  for (const char *name : {"uevent", "name", "phys", "uniq", "properties", "subsystem"})
+    unlink((input + "/" + name).c_str());
+  rmdir(input.c_str());
+}
+
+__attribute__((visibility("hidden"))) static void publish_input_sysfs(int node, const UinputDescription &d) {
+  remove_input_sysfs(node);
+  std::string n = std::to_string(node);
+  unsigned minor = EVENT_MINOR_BASE + node;
+  std::string input = std::string(INPUT_SYSFS_DEVICES) + "/input" + n;
+  std::string event = input + "/event" + n;
+  if (mkdir(input.c_str(), 0755) < 0 && errno != EEXIST) {
+    Logger::log("uinput: %s not created (%s): games using libudev will not see event%d\n", input.c_str(),
+                strerror(errno), node);
+    return;
+  }
+  mkdir((input + "/id").c_str(), 0755);
+  mkdir((input + "/capabilities").c_str(), 0755);
+  mkdir(event.c_str(), 0755);
+
+  char id[64];
+  snprintf(id, sizeof(id), "%x/%x/%x/%x", d.id.bustype, d.id.vendor, d.id.product, d.id.version);
+  std::string ev = sysfs_bitmap(d.evbits, sizeof(d.evbits));
+  std::string key = sysfs_bitmap(d.keybits, sizeof(d.keybits));
+  std::string abs = sysfs_bitmap(d.absbits, sizeof(d.absbits));
+  std::string ff = sysfs_bitmap(d.ffbits, sizeof(d.ffbits));
+  sysfs_write(input + "/uevent", std::string("PRODUCT=") + id + "\nNAME=\"" + d.name + "\"\nPHYS=\"" + d.phys +
+                                     "\"\nPROP=0\nEV=" + ev + "\nKEY=" + key + "\nABS=" + abs + "\n");
+  sysfs_write(input + "/name", std::string(d.name) + "\n");
+  sysfs_write(input + "/phys", std::string(d.phys) + "\n");
+  sysfs_write(input + "/uniq", "\n");
+  sysfs_write(input + "/properties", "0\n");
+  const unsigned ids[] = {d.id.bustype, d.id.vendor, d.id.product, d.id.version};
+  const char *const id_names[] = {"bustype", "vendor", "product", "version"};
+  for (int i = 0; i < 4; i++) {
+    char value[8];
+    snprintf(value, sizeof(value), "%04x\n", ids[i]);
+    sysfs_write(input + "/id/" + id_names[i], value);
+  }
+  sysfs_write(input + "/capabilities/ev", ev + "\n");
+  sysfs_write(input + "/capabilities/key", key + "\n");
+  sysfs_write(input + "/capabilities/abs", abs + "\n");
+  sysfs_write(input + "/capabilities/ff", ff + "\n");
+  for (const char *name : {"rel", "msc", "sw", "led", "snd"}) sysfs_write(input + "/capabilities/" + name, "0\n");
+  sysfs_link(input + "/subsystem", INPUT_SYSFS_CLASS);
+
+  sysfs_write(event + "/uevent", "MAJOR=13\nMINOR=" + std::to_string(minor) + "\nDEVNAME=input/event" + n + "\n");
+  sysfs_write(event + "/dev", "13:" + std::to_string(minor) + "\n");
+  sysfs_link(event + "/subsystem", INPUT_SYSFS_CLASS);
+  sysfs_link(event + "/device", input);
+
+  std::string record = "I:" + std::to_string(time(nullptr) * 1000000ull) +
+                       "\nE:ID_INPUT=1\nE:ID_INPUT_JOYSTICK=1\nE:ID_SERIAL=noserial\nG:seat\nG:uaccess\nQ:seat\n"
+                       "Q:uaccess\nV:1\n";
+  sysfs_write("/run/udev/data/+input:input" + n, record);
+  sysfs_write("/run/udev/data/c13:" + std::to_string(minor), record);
+  sysfs_link(std::string(INPUT_SYSFS_CLASS) + "/input" + n, input);
+  sysfs_link(std::string(INPUT_SYSFS_CLASS) + "/event" + n, event);
+}
+
 __attribute__((visibility("hidden"))) static int
 open_fake_input_ring(const char *event, int flags) {
   int slot = get_event_number(event);
@@ -848,6 +967,7 @@ __attribute__((visibility("hidden"))) static void unpublish_uinput(UinputWriter 
   __atomic_add_fetch(&w.ring->generation, 1, __ATOMIC_RELEASE);
   std::string node = std::string(fake_hook_dir()) + "/event" + std::to_string(w.node);
   unlink(node.c_str());
+  remove_input_sysfs(w.node);
   unlink((uinput_ring_path(w.node) + ".uevent").c_str());
   unlink(uinput_ring_path(w.node).c_str());
   munmap(w.ring, UINPUT_FILE_SIZE);
@@ -875,6 +995,7 @@ __attribute__((visibility("hidden"))) static int claim_uinput_node(int *fd_out) 
     syscall(SYS_close, existing);
     if (stale) {
       unlink((std::string(fake_hook_dir()) + "/event" + std::to_string(node)).c_str());
+      remove_input_sysfs(node);
       unlink((path + ".uevent").c_str());
       unlink(path.c_str());
       node--;
@@ -919,10 +1040,12 @@ __attribute__((visibility("hidden"))) static int publish_uinput(UinputWriter &w)
     if (write(uevent_fd, uevent, std::min<size_t>(length, sizeof(uevent) - 1)) < 0) {}
     syscall(SYS_close, uevent_fd);
   }
+  publish_input_sysfs(node, *shared);
   std::string node_path = std::string(fake_hook_dir()) + "/event" + std::to_string(node);
   int node_fd = my_open(node_path.c_str(), O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
   if (node_fd < 0) {
     munmap(mapping, UINPUT_FILE_SIZE);
+    remove_input_sysfs(node);
     unlink((ring_path + ".uevent").c_str());
     unlink(ring_path.c_str());
     return -1;
@@ -2845,7 +2968,9 @@ __attribute__((visibility("hidden"))) static std::string note_sys_failure(int di
 
 __attribute__((visibility("hidden"))) static std::string deck_listing_for(const char *path) {
   const char *listing = deck_listing_dir();
-  if (!path || !listing || errno != EACCES || !fake_deck_enabled() || !process_is_steam_client()) return {};
+  // Local Desktop: every process, not only the Steam client, so libudev in a game finds
+  // /sys/class/input (Android refuses to list /sys/class).
+  if (!path || !listing || errno != EACCES || !fake_deck_enabled()) return {};
   std::string p(path);
   while (p.size() > 1 && p.back() == '/') p.pop_back();
   int which = p == "/sys" ? 0 : p == "/sys/class" ? 1 : p == "/sys/bus" ? 2 : -1;
