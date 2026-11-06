@@ -10,7 +10,10 @@
     private static native void nativeDnsServersChanged(java.lang.String[]);
 }
 -keep class io.github.localdesktop.ControllerMotion {
-    private static native boolean nativeMotionWanted();
-    private static native void nativeMotion(int, float, float, float);
-    private static native void nativeMotionStopped();
+    private static native void nativeControllerAdded(int, int);
+    private static native void nativeControllerRemoved(int);
+    private static native void nativeControllersRefresh();
+    private static native boolean nativeMotionWanted(int);
+    private static native void nativeMotion(int, int, float, float, float);
+    private static native void nativeMotionStopped(int);
 }

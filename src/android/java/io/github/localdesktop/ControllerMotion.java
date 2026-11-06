@@ -13,11 +13,14 @@ import android.util.Log;
 import android.view.InputDevice;
 
 /**
- * Feeds a game controller's gyro and accelerometer to the emulated Steam Deck controller (see
- * src/android/app/controller_motion.rs). Android 12 and later give each controller whose kernel
- * driver exposes its motion sensors (DualShock 4, DualSense, and Switch controllers on Linux 5.16+)
- * its own {@link SensorManager}. The sensors are read only while Steam wants motion, checked twice a
- * second, and from the controller connected last that has them.
+ * Follows the game controllers paired with Android for the native side: each one connecting and going
+ * away (src/android/app/controller_slots.rs gives some a slot, and so a controller in Steam, of their
+ * own), and the gyro and accelerometer of one (src/android/app/controller_motion.rs).
+ *
+ * Android 12 and later give each controller whose kernel driver exposes its motion sensors
+ * (DualShock 4, DualSense, and Switch controllers on Linux 5.16+) its own {@link SensorManager}. The
+ * sensors are read only while Steam wants motion from that controller, checked twice a second, and
+ * from the controller connected last that has them.
  */
 final class ControllerMotion implements InputManager.InputDeviceListener, SensorEventListener {
     private static final String TAG = "ControllerMotion";
@@ -42,14 +45,20 @@ final class ControllerMotion implements InputManager.InputDeviceListener, Sensor
         }
     };
 
-    private static native boolean nativeMotionWanted();
+    private static native void nativeControllerAdded(int device, int vendor);
 
-    private static native void nativeMotion(int kind, float x, float y, float z);
+    private static native void nativeControllerRemoved(int device);
 
-    private static native void nativeMotionStopped();
+    private static native void nativeControllersRefresh();
+
+    private static native boolean nativeMotionWanted(int device);
+
+    private static native void nativeMotion(int device, int kind, float x, float y, float z);
+
+    private static native void nativeMotionStopped(int device);
 
     static synchronized void start(Context context) {
-        if (instance != null || Build.VERSION.SDK_INT < 31) {
+        if (instance != null) {
             return;
         }
         HandlerThread thread = new HandlerThread("controller-motion", android.os.Process.THREAD_PRIORITY_DISPLAY);
@@ -73,10 +82,23 @@ final class ControllerMotion implements InputManager.InputDeviceListener, Sensor
         });
     }
 
-    /** A controller with a gyro or accelerometer of its own, or null. */
+    /**
+     * A gamepad or joystick. The source flags share class bits (SOURCE_GAMEPAD includes the button
+     * class every keyboard has, so a touchpad with keys would match a plain mask): require the whole
+     * flag.
+     */
+    private static boolean isController(InputDevice device) {
+        if (device == null || device.isVirtual()) {
+            return false;
+        }
+        int sources = device.getSources();
+        return (sources & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
+                || (sources & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK;
+    }
+
+    /** A controller's own gyro and accelerometer, or null. */
     private static SensorManager motionSensors(InputDevice device) {
-        if (device == null || device.isVirtual()
-                || (device.getSources() & (InputDevice.SOURCE_GAMEPAD | InputDevice.SOURCE_JOYSTICK)) == 0) {
+        if (Build.VERSION.SDK_INT < 31 || !isController(device)) {
             return null;
         }
         SensorManager manager = device.getSensorManager();
@@ -88,7 +110,9 @@ final class ControllerMotion implements InputManager.InputDeviceListener, Sensor
     }
 
     private void poll() {
-        boolean wanted = device >= 0 && nativeMotionWanted();
+        // A new session makes new rings: put the controllers' slots back into them.
+        nativeControllersRefresh();
+        boolean wanted = device >= 0 && nativeMotionWanted(device);
         idlePolls = wanted ? 0 : idlePolls + 1;
         if (wanted && !reading) {
             listen();
@@ -117,24 +141,35 @@ final class ControllerMotion implements InputManager.InputDeviceListener, Sensor
         if (reading) {
             sensors.unregisterListener(this);
             reading = false;
-            nativeMotionStopped();
+            nativeMotionStopped(device);
         }
     }
 
     @Override
     public void onInputDeviceAdded(int id) {
-        SensorManager manager = motionSensors(input.getInputDevice(id));
-        if (manager == null) {
+        added(id, true);
+    }
+
+    /** A controller (or one that changed): its slot, and its sensors if {@code adopt} or none are read. */
+    private void added(int id, boolean adopt) {
+        InputDevice added = input.getInputDevice(id);
+        if (!isController(added)) {
+            return;
+        }
+        nativeControllerAdded(id, added.getVendorId());
+        SensorManager manager = motionSensors(added);
+        if (manager == null || (!adopt && device >= 0) || id == device) {
             return;
         }
         stopListening();
         device = id;
         sensors = manager;
-        Log.i(TAG, "controller " + id + " (" + input.getInputDevice(id).getName() + ") has motion sensors");
+        Log.i(TAG, "controller " + id + " (" + added.getName() + ") has motion sensors");
     }
 
     @Override
     public void onInputDeviceRemoved(int id) {
+        nativeControllerRemoved(id);
         if (id != device) {
             return;
         }
@@ -143,7 +178,14 @@ final class ControllerMotion implements InputManager.InputDeviceListener, Sensor
         sensors = null;
         // Fall back to another connected controller with motion sensors.
         for (int other : input.getInputDeviceIds()) {
-            onInputDeviceAdded(other);
+            if (device < 0) {
+                InputDevice candidate = input.getInputDevice(other);
+                SensorManager manager = motionSensors(candidate);
+                if (manager != null) {
+                    device = other;
+                    sensors = manager;
+                }
+            }
         }
     }
 
@@ -151,8 +193,8 @@ final class ControllerMotion implements InputManager.InputDeviceListener, Sensor
     public void onInputDeviceChanged(int id) {
         if (id == device && motionSensors(input.getInputDevice(id)) == null) {
             onInputDeviceRemoved(id);
-        } else if (device < 0) {
-            onInputDeviceAdded(id);
+        } else {
+            added(id, false);
         }
     }
 
@@ -169,7 +211,7 @@ final class ControllerMotion implements InputManager.InputDeviceListener, Sensor
             default:
                 return;
         }
-        nativeMotion(kind, event.values[0], event.values[1], event.values[2]);
+        nativeMotion(device, kind, event.values[0], event.values[1], event.values[2]);
     }
 
     @Override

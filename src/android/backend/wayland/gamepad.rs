@@ -19,6 +19,7 @@
 //! Off unless `/root/.config/localdesktop/gamepad-enabled` exists (while it is unfinished: it was
 //! drawn on some frames only and its controls then took touches invisibly).
 
+use crate::android::app::controller_slots;
 use crate::core::config::arch_fs_root;
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::texture::{TextureBuffer, TextureRenderElement};
@@ -37,12 +38,6 @@ use winit::event::{Touch, TouchPhase};
 const SNAPSHOT_SEQ: u64 = 32;
 const SNAPSHOT_BUTTONS: u64 = 40;
 const RING_MAGIC: u32 = 0x4649_4252;
-/// The pad type field of the ring's IMU block (libfakeinput's `DeckImu::pad_type`): which controller
-/// libfakeinput presents to Steam, with the top bit set once chosen.
-const PAD_TYPE: u64 = 64 + 4096 * 24 + 44;
-const PAD_TYPE_SET: u32 = 0x8000_0000;
-const PAD_TYPE_DECK: u32 = 0;
-const PAD_TYPE_SWITCH_PRO: u32 = 5;
 
 // Snapshot button bits (libfakeinput's kSnapshotButtons, Quick Access at 11).
 const A: u32 = 0;
@@ -154,6 +149,97 @@ struct Controller {
 }
 
 impl Controller {
+    /// A button by Android's keycode (by label for a Nintendo controller). Mode (Capture on a
+    /// Switch Pro Controller) tapped alone is the Steam button for `STEAM_TAP`, whose end the caller
+    /// schedules; Mode + Select is Quick Access; Mode + another button is Steam plus that button.
+    fn button(&mut self, keycode: u32, pressed: bool) -> Option<Duration> {
+        let mut tap = None;
+        let bit = match keycode {
+            KEY_MODE => {
+                if pressed {
+                    self.mode_held = true;
+                    self.mode_used = false;
+                } else {
+                    self.mode_held = false;
+                    self.buttons &= !((1 << STEAM) | (1 << QAM));
+                    if !self.mode_used {
+                        self.buttons |= 1 << STEAM;
+                        tap = Some(STEAM_TAP);
+                    }
+                }
+                None
+            }
+            KEY_A => Some(A),
+            KEY_B => Some(B),
+            KEY_X => Some(X),
+            KEY_Y => Some(Y),
+            KEY_L1 => Some(L1),
+            KEY_R1 => Some(R1),
+            KEY_THUMBL => Some(L3),
+            KEY_THUMBR => Some(R3),
+            KEY_START => Some(MENU),
+            KEY_SELECT => Some(VIEW),
+            KEY_L2 => {
+                self.left_trigger.2 = pressed;
+                None
+            }
+            KEY_R2 => {
+                self.right_trigger.2 = pressed;
+                None
+            }
+            KEY_DPAD_UP | KEY_DPAD_DOWN | KEY_DPAD_LEFT | KEY_DPAD_RIGHT => {
+                self.dpad[(keycode - KEY_DPAD_UP) as usize] = pressed;
+                None
+            }
+            _ => return None,
+        };
+        if pressed && keycode != KEY_MODE && self.mode_held {
+            self.mode_used = true;
+            if keycode != KEY_SELECT {
+                self.buttons |= 1 << STEAM;
+            }
+        }
+        if let Some(bit) = bit {
+            if bit == VIEW && !pressed {
+                self.buttons &= !((1 << VIEW) | (1 << QAM));
+            } else if bit == VIEW && self.mode_held {
+                self.buttons |= 1 << QAM;
+            } else if pressed {
+                self.buttons |= 1 << bit;
+            } else {
+                self.buttons &= !(1 << bit);
+            }
+        }
+        tap
+    }
+
+    /// The end of a Steam tap; whether that changed anything.
+    fn end_steam_tap(&mut self) -> bool {
+        if self.mode_held || self.buttons & (1 << STEAM) == 0 {
+            return false;
+        }
+        self.buttons &= !(1 << STEAM);
+        true
+    }
+
+    /// An axis by Android's number; whether it is one of ours.
+    fn axis(&mut self, axis: u32, value: f64) -> bool {
+        match axis {
+            AXIS_X => self.sticks[0] = value,
+            AXIS_Y => self.sticks[1] = value,
+            AXIS_Z => self.sticks[2] = value,
+            AXIS_RZ => self.sticks[3] = value,
+            AXIS_HAT_X => self.hat.0 = value,
+            AXIS_HAT_Y => self.hat.1 = value,
+            AXIS_LTRIGGER => self.left_trigger.0 = value,
+            AXIS_BRAKE => self.left_trigger.1 = value,
+            AXIS_RTRIGGER => self.right_trigger.0 = value,
+            AXIS_GAS => self.right_trigger.1 = value,
+            _ => return false,
+        }
+        true
+    }
+
     /// In the ring's terms, as `Gamepad::axes` is.
     fn axes(&self) -> [i16; 8] {
         let stick = |value: f64| (value.clamp(-1.0, 1.0) * 32767.0) as i16;
@@ -188,6 +274,8 @@ impl Controller {
 
 pub struct Gamepad {
     controller: Controller,
+    /// Controllers on a slot of their own (see `controller_slots`), by Android device.
+    own: HashMap<i32, Controller>,
     /// What was last written for the controller, to skip writes for events that changed nothing.
     controller_axes: [i16; 8],
     /// Whether each Android input device is a Nintendo controller, looked up once.
@@ -204,10 +292,16 @@ pub struct Gamepad {
     game_mode: bool,
     checked: Option<Instant>,
     ring: Option<File>,
-    /// The pad type last written into this ring.
-    pad_type: Option<u32>,
     font: Option<ab_glyph::FontVec>,
     last_stick_tap: HashMap<usize, Instant>,
+}
+
+/// Writes a controller on a slot of its own into that slot's ring: it alone drives it.
+fn publish_own(slot: usize, controller: &Controller) {
+    if slot == 0 {
+        return;
+    }
+    controller_slots::with_ring(slot, |ring| controller_slots::write_snapshot(ring, controller.buttons, &controller.axes()));
 }
 
 /// A Nintendo controller's button by its label: Android numbers it by position.
@@ -229,6 +323,7 @@ impl Gamepad {
     pub fn new() -> Self {
         Gamepad {
             controller: Controller::default(),
+            own: HashMap::new(),
             controller_axes: [0; 8],
             nintendo: HashMap::new(),
             size: (0, 0),
@@ -242,7 +337,6 @@ impl Gamepad {
             game_mode: false,
             checked: None,
             ring: None,
-            pad_type: None,
             font: None,
             last_stick_tap: HashMap::new(),
         }
@@ -293,109 +387,45 @@ impl Gamepad {
             vendor == Some(NINTENDO)
         });
         let keycode = if nintendo { by_label(keycode) } else { keycode };
-        let controller = &mut self.controller;
-        let mut tap = None;
-        let bit = match keycode {
-            KEY_MODE => {
-                if pressed {
-                    controller.mode_held = true;
-                    controller.mode_used = false;
-                } else {
-                    controller.mode_held = false;
-                    controller.buttons &= !((1 << STEAM) | (1 << QAM));
-                    if !controller.mode_used {
-                        controller.buttons |= 1 << STEAM;
-                        tap = Some(STEAM_TAP);
-                    }
-                }
-                None
-            }
-            KEY_A => Some(A),
-            KEY_B => Some(B),
-            KEY_X => Some(X),
-            KEY_Y => Some(Y),
-            KEY_L1 => Some(L1),
-            KEY_R1 => Some(R1),
-            KEY_THUMBL => Some(L3),
-            KEY_THUMBR => Some(R3),
-            KEY_START => Some(MENU),
-            KEY_SELECT => Some(VIEW),
-            KEY_L2 => {
-                controller.left_trigger.2 = pressed;
-                None
-            }
-            KEY_R2 => {
-                controller.right_trigger.2 = pressed;
-                None
-            }
-            KEY_DPAD_UP | KEY_DPAD_DOWN | KEY_DPAD_LEFT | KEY_DPAD_RIGHT => {
-                controller.dpad[(keycode - KEY_DPAD_UP) as usize] = pressed;
-                None
-            }
-            _ => return None,
-        };
-        if pressed && keycode != KEY_MODE && controller.mode_held {
-            controller.mode_used = true;
-            if keycode != KEY_SELECT {
-                controller.buttons |= 1 << STEAM;
-            }
+        let slot = controller_slots::slot_of(device);
+        if slot == 0 {
+            let tap = self.controller.button(keycode, pressed);
+            self.publish();
+            return tap;
         }
-        if let Some(bit) = bit {
-            if bit == VIEW && !pressed {
-                controller.buttons &= !((1 << VIEW) | (1 << QAM));
-            } else if bit == VIEW && controller.mode_held {
-                controller.buttons |= 1 << QAM;
-            } else if pressed {
-                controller.buttons |= 1 << bit;
-            } else {
-                controller.buttons &= !(1 << bit);
-            }
-        }
-        self.publish();
-        // Steam sees a Nintendo controller as a Switch Pro Controller (its glyphs, templates and
-        // button layout), any other as the Steam Deck controller: the last one pressed decides.
-        self.set_pad_type(if nintendo { PAD_TYPE_SWITCH_PRO } else { PAD_TYPE_DECK });
+        let controller = self.own.entry(device).or_default();
+        let tap = controller.button(keycode, pressed);
+        publish_own(slot, controller);
         tap
     }
 
-    fn set_pad_type(&mut self, pad_type: u32) {
-        if self.pad_type == Some(pad_type) {
-            return;
-        }
-        let Some(ring) = self.ring.as_ref() else { return };
-        if ring.write_all_at(&(PAD_TYPE_SET | pad_type).to_le_bytes(), PAD_TYPE).is_ok() {
-            log::info!("gamepad: Steam now sees a {}", if pad_type == PAD_TYPE_SWITCH_PRO { "Switch Pro Controller" } else { "Steam Deck controller" });
-            self.pad_type = Some(pad_type);
-        }
-    }
-
     pub fn end_steam_tap(&mut self) {
-        if !self.controller.mode_held {
-            self.controller.buttons &= !(1 << STEAM);
+        if self.controller.end_steam_tap() {
             self.publish();
+        }
+        for (&device, controller) in self.own.iter_mut() {
+            if controller.end_steam_tap() {
+                publish_own(controller_slots::slot_of(device), controller);
+            }
         }
     }
 
     /// A physical controller's axis, by Android's number.
-    pub fn controller_axis(&mut self, axis: u32, value: f64) {
-        let controller = &mut self.controller;
-        match axis {
-            AXIS_X => controller.sticks[0] = value,
-            AXIS_Y => controller.sticks[1] = value,
-            AXIS_Z => controller.sticks[2] = value,
-            AXIS_RZ => controller.sticks[3] = value,
-            AXIS_HAT_X => controller.hat.0 = value,
-            AXIS_HAT_Y => controller.hat.1 = value,
-            AXIS_LTRIGGER => controller.left_trigger.0 = value,
-            AXIS_BRAKE => controller.left_trigger.1 = value,
-            AXIS_RTRIGGER => controller.right_trigger.0 = value,
-            AXIS_GAS => controller.right_trigger.1 = value,
-            _ => return,
+    pub fn controller_axis(&mut self, device: i32, axis: u32, value: f64) {
+        let slot = controller_slots::slot_of(device);
+        if slot != 0 {
+            let controller = self.own.entry(device).or_default();
+            if controller.axis(axis, value) {
+                publish_own(slot, controller);
+            }
+            return;
         }
-        let axes = controller.axes();
-        if axes != self.controller_axes {
-            self.controller_axes = axes;
-            self.publish();
+        if self.controller.axis(axis, value) {
+            let axes = self.controller.axes();
+            if axes != self.controller_axes {
+                self.controller_axes = axes;
+                self.publish();
+            }
         }
     }
 
@@ -404,12 +434,14 @@ impl Gamepad {
         self.controller = Controller::default();
         self.controller_axes = [0; 8];
         self.publish();
+        for (device, _) in self.own.drain() {
+            publish_own(controller_slots::slot_of(device), &Controller::default());
+        }
     }
 
     /// A new session makes a new ring.
     pub fn session_ended(&mut self) {
         self.ring = None;
-        self.pad_type = None;
     }
 
     fn lay_out(&mut self, w: i32, h: i32) {
@@ -453,6 +485,7 @@ impl Gamepad {
     /// session must not see it).
     pub fn claim(&mut self, touch: &Touch, window: (i32, i32)) -> bool {
         self.refresh_game_mode();
+        controller_slots::set_on_screen(self.visible());
         if !self.game_mode {
             return false;
         }
@@ -540,6 +573,7 @@ impl Gamepad {
             }
             Action::Toggle => {
                 self.hidden = !self.hidden;
+                controller_slots::set_on_screen(self.visible());
                 let flag = guest("/root/.config/localdesktop/gamepad-hidden");
                 let saved = if self.hidden {
                     std::fs::create_dir_all(flag.parent().unwrap()).and_then(|_| std::fs::write(&flag, ""))
@@ -586,7 +620,6 @@ impl Gamepad {
         let mut word = [0u8; 8];
         if ring.read_at(&mut word[..4], 0).is_err() || u32::from_le_bytes(word[..4].try_into().unwrap()) != RING_MAGIC {
             self.ring = None;
-            self.pad_type = None;
             return;
         }
         let _ = ring.read_at(&mut word, SNAPSHOT_SEQ);
@@ -617,6 +650,7 @@ impl Gamepad {
     /// The controls to draw over the session this frame (topmost first).
     pub fn elements(&mut self, renderer: &mut GlesRenderer, window: (i32, i32)) -> Vec<TextureRenderElement<GlesTexture>> {
         self.refresh_game_mode();
+        controller_slots::set_on_screen(self.visible());
         if !self.game_mode {
             return Vec::new();
         }

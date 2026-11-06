@@ -72,38 +72,72 @@ and Android refuses apps udev's netlink socket, so SDL dropped joystick support 
   a Steam that died.
 - libfakeinput's `/sys/class` listing stand-in now serves every process, not only the client.
 
-**Switch Pro Controller.** A press from a Nintendo controller sets the ring's pad type to Switch
-Pro (any other controller sets it back to the Deck), and libfakeinput then serves `/dev/hidraw22`
-(`0005:057E:2009`, Bluetooth) instead of the Deck, with only that node listed in
-`/sys/class/hidraw`; `localdesktop-pad setup` describes it under `/sys/devices/droiddeck/bluetooth`.
-It speaks Nintendo's protocol: full input reports 0x30 every 8 ms (buttons by label, 12-bit
-sticks, the IMU block), replies 0x21 to subcommands (device info, SPI flash reads of factory stick
-and IMU calibrations and colours, plain acks for modes and lights) and rumble from reports
-0x01/0x10. Capture tapped alone is Home; Capture + Minus is the Switch's Capture button (Android
-keeps Home for itself).
+**Slots: each controller as itself.** The guest has one ring per controller slot
+(`/run/localdesktop-pad/fakeinput-rings/ring0` to `ring3`, all named in `FAKE_EVDEV_MEMFD_PATHS`):
+
+- **Slot 0** is the Steam Deck controller above: the on-screen gamepad's, and that of any controller
+  without a slot of its own (today every non-Nintendo one), merged by position. Steam sees it only
+  while it is in use, the on-screen gamepad shown or such a controller connected; otherwise the app
+  sets slot 0's pad type to "none" and libfakeinput takes the Deck away (a udev `remove`, no
+  `/sys/class/hidraw` link), so Steam lists only the real controllers.
+- **Slots 1 to 3** each carry one physical controller paired with Android, presented as itself on
+  `/dev/hidraw33` to `35`, so each is a player of its own in Steam and in games (Steam Input makes
+  each its own virtual pad), with its own glyphs, templates and community layouts. Today a Nintendo
+  controller gets one, as a Switch Pro Controller.
+
+`ControllerMotion.java` reports controllers connecting and going away to
+`src/android/app/controller_slots.rs`, which gives slots and writes each slot's pad type (bit 31 set)
+into its ring's IMU block, and writes them again twice a second so a new session's rings get them.
+A device counts as a controller only with the whole `SOURCE_GAMEPAD` or `SOURCE_JOYSTICK` flag: they
+share class bits with keyboards, so a plain mask also matches the phone's touchpad and screen.
+`gamepad.rs` writes a slotted controller's buttons and axes into its own ring. In the Steam client,
+libfakeinput reads the slots every 50 ms; when one gains a controller it describes its hidraw node in
+sysfs (`/sys/devices/droiddeck/slotN/…`, the `/sys/class/hidraw` link, `/sys/dev/char`, the udev
+record) and then sends Steam's udev monitor an `add`, and the other way round when it goes. Slots
+1 to 3 are never evdev pads (`/dev/input/event1` to `3`).
+
+**Switch Pro Controller.** libfakeinput speaks Nintendo's Bluetooth HID protocol (`0005:057E:2009`):
+full input reports 0x30 every 8 ms (buttons by label, 12-bit sticks, the slot's IMU block), replies
+0x21 to subcommands (device info, SPI flash reads of factory stick and IMU calibrations and colours,
+plain acks for modes and lights) and rumble from reports 0x01/0x10. Like the kernel's hidraw, it
+never lets old input reports block what comes next: it skips an input report while a reply waits or
+while half the socket is unread (Steam stops reading for seconds while it sets up its virtual pads),
+so every reply gets through. Capture tapped alone is Home; Capture + Minus is the Switch's Capture
+button (Android keeps Home for itself). The same type can also be slot 0's, with
+`FAKE_EVDEV_PAD_TYPE=switchpro` (`/dev/hidraw22`, described by `localdesktop-pad setup`).
 
 **Gyro.** `ControllerMotion.java` reads the gyro and accelerometer of the controller connected last
 that has them, through `InputDevice.getSensorManager()` (Android 12+), while Steam wants motion
-(the IMU mode Steam sets on the Deck, which libfakeinput writes into the IMU block).
-`src/android/app/controller_motion.rs` writes each reading into the IMU block in the Deck's axes
-(x, -z, y of the controller's x right, y up, z toward the player) and units. `ld-gyrotest` checks
+from it (the IMU mode Steam sets on that slot's controller, which libfakeinput writes into the IMU
+block). `src/android/app/controller_motion.rs` writes each reading into the IMU block of that
+controller's slot, in the Deck's axes (x, -z, y of the controller's x right, y up, z toward the
+player) and units; the Switch Pro's reports convert them back to Nintendo's. `ld-gyrotest` checks
 it with a virtual DualShock 4 made by Android's `hid` tool.
 
-A controller paired with Android joins the same ring: winit reports its axes and buttons as device
-events, so it no longer produces arrow keys or mouse motion, and `gamepad.rs` merges it with the
-on-screen gamepad by position. Mode (Capture on a Switch Pro) tapped alone is the Steam button for
-80 ms, Mode + Select (Minus) is Quick Access, and Mode + another button is Steam plus that button.
+**Rumble** from Steam goes to the abstract socket `droiddeck-rumble`, which only DroidDeck's app
+listens on: controller rumble does not reach Android yet.
+
+A controller paired with Android reaches the app as winit device events (axes and buttons), so it
+no longer produces arrow keys or mouse motion. Mode (Capture on a Switch Pro) tapped alone is the
+Steam button for 80 ms, Mode + Select (Minus) is Quick Access, and Mode + another button is Steam
+plus that button.
 
 `ld-padtest` (`scripts/device`) needs no physical controller. Android's `uinput` tool creates a
 virtual one with a Switch Pro Controller's ids, so Android applies its real key layout, and the
-test reads the ring. It passes for all buttons, triggers, the d-pad, sticks, chords, the Steam tap
-and unplugging with a button down. That covers Android to the ring only.
+test reads the rings (`localdesktop-pad --slot N state`). It checks that the controller gets slot 1
+as a Switch Pro and leaves it when unplugged, that slot 0 stays clear meanwhile, all buttons,
+triggers, the d-pad, sticks, chords, the Steam tap and unplugging with a button down; then that a
+virtual Xbox pad, with no slot of its own, brings the Deck back on slot 0. That covers Android to
+the rings; Steam's side shows in `pad.log` (`slot 1: a Pro Controller on /dev/hidraw33`).
 
 ## Next
 
 1. Gyro: try gyro as mouse in a game's layout. Steam already follows the gyro (Settings →
    Controller → Calibration & Advanced Settings → gyro calibration, with `ld-gyrotest --wave`).
-2. Touch controls drawn by the app's compositor, writing the ring; then Steam's touch controller
+2. Sony controllers on slots of their own as a DualShock 4 or DualSense (libfakeinput has both;
+   their slot sysfs needs USB parents), and other controllers as Xbox pads.
+3. Rumble from Steam to the controller (Android's vibrator for it).
+4. Touch controls drawn by the app's compositor, writing the ring; then Steam's touch controller
    (`0000:11fb`), whose layouts and per-game configs are Steam's.
 
 ## Requirements for the on-screen gamepad

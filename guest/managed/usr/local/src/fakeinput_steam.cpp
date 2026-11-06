@@ -31,6 +31,7 @@
 #include <linux/input.h>
 #include <linux/joystick.h>
 #include <linux/uinput.h>
+#include <linux/sockios.h>
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
@@ -1268,6 +1269,9 @@ struct DeckHidraw {
   bool triton = false;
   bool emulated = false;
   uint8_t sony = 0;
+  int slot = 0;  // Local Desktop: the controller slot whose ring this serves
+  // Local Desktop: replies waiting to go out (a Switch Pro Controller's), ahead of input reports.
+  mutable std::atomic<int> replying{0};
 };
 
 struct DeckImu {
@@ -1413,17 +1417,27 @@ __attribute__((visibility("hidden"))) static uint32_t session_pad_type() {
   return static_cast<uint32_t>(type);
 }
 
-__attribute__((visibility("hidden"))) static const uint8_t *ring_blocks() {
-  static std::atomic<const uint8_t *> block{nullptr};
-  static std::atomic<int> tries{0};
+// Local Desktop: controller slots. Slot 0 is the on-screen gamepad's controller (a Steam Deck by
+// default, see the pad types); slots 1 to 3 each carry one physical controller paired with Android,
+// presented as the pad type its own ring's IMU block names, on /dev/hidraw33 to 35. A slot whose
+// pad type is unset has no controller.
+static constexpr int SLOT_COUNT = 4;
+static constexpr unsigned int SLOT_HIDRAW_MINOR_BASE = 32;
+static constexpr uint32_t PAD_TYPE_NONE = 0xff;
+
+__attribute__((visibility("hidden"))) static const uint8_t *ring_blocks(int slot = 0) {
+  static std::atomic<const uint8_t *> blocks[SLOT_COUNT];
+  static std::atomic<int> tries[SLOT_COUNT];
+  if (slot < 0 || slot >= SLOT_COUNT) return nullptr;
+  std::atomic<const uint8_t *> &block = blocks[slot];
   const uint8_t *mapped = block.load(std::memory_order_acquire);
-  if (mapped || tries.load(std::memory_order_relaxed) > 200) return mapped;
+  if (mapped || tries[slot].load(std::memory_order_relaxed) > 200) return mapped;
   static std::mutex lock;
   std::lock_guard<std::mutex> guard(lock);
   if ((mapped = block.load(std::memory_order_acquire))) return mapped;
-  tries.fetch_add(1, std::memory_order_relaxed);
+  tries[slot].fetch_add(1, std::memory_order_relaxed);
   static auto my_open = reinterpret_cast<int (*)(const char *, int, ...)>(dlsym(RTLD_NEXT, "open"));
-  std::string path = get_ring_path_for_slot(0);
+  std::string path = get_ring_path_for_slot(slot);
   int fd = path.empty() ? -1 : my_open(path.c_str(), O_RDONLY | O_CLOEXEC);
   if (fd < 0) return nullptr;
   struct stat st;
@@ -1451,6 +1465,20 @@ __attribute__((visibility("hidden"))) static uint32_t live_pad_type() {
   const DeckImu *imu = blocks ? reinterpret_cast<const DeckImu *>(blocks + FAKE_INPUT_RING_SIZE) : nullptr;
   uint32_t value = imu ? __atomic_load_n(&imu->pad_type, __ATOMIC_ACQUIRE) : 0;
   return value & PAD_TYPE_SET ? value & 0xff : session_pad_type();
+}
+
+// A slot's pad type: slot 0's as above, a physical controller's slot its own, or PAD_TYPE_NONE.
+__attribute__((visibility("hidden"))) static uint32_t slot_pad_type(int slot) {
+  if (slot == 0) return live_pad_type();
+  const uint8_t *blocks = ring_blocks(slot);
+  const DeckImu *imu = blocks ? reinterpret_cast<const DeckImu *>(blocks + FAKE_INPUT_RING_SIZE) : nullptr;
+  uint32_t value = imu ? __atomic_load_n(&imu->pad_type, __ATOMIC_ACQUIRE) : 0;
+  return value & PAD_TYPE_SET ? value & 0xff : PAD_TYPE_NONE;
+}
+
+// The model DeckHidraw::sony serves for a pad type (0: not one of the hidraw pads a slot can be).
+__attribute__((visibility("hidden"))) static uint8_t slot_model(uint32_t type) {
+  return type == PAD_TYPE_DS4 ? 4 : type == PAD_TYPE_DUALSENSE ? 5 : type == PAD_TYPE_SWITCH_PRO ? 6 : 0;
 }
 
 __attribute__((visibility("hidden"))) static bool low_latency(uint32_t which) {
@@ -1519,8 +1547,17 @@ __attribute__((visibility("hidden"))) static unsigned int sony_minor(uint8_t son
   return sony == 4 ? DS4_HIDRAW_MINOR : sony == 5 ? DUALSENSE_HIDRAW_MINOR : SWITCH_HIDRAW_MINOR;
 }
 
+// The slot of a /dev/hidraw33 to 35 path (0 for any other).
+__attribute__((visibility("hidden"))) static int sony_pad_slot(const char *pathname) {
+  if (!pathname || strncmp(pathname, "/dev/hidraw3", 12) || !pathname[12] || pathname[13]) return 0;
+  int slot = pathname[12] - '0' - static_cast<int>(SLOT_HIDRAW_MINOR_BASE % 10);
+  return slot >= 1 && slot < SLOT_COUNT ? slot : 0;
+}
+
 __attribute__((visibility("hidden"))) static int sony_pad_path(const char *pathname) {
-  if (!pathname || !fake_deck_enabled() || strncmp(pathname, "/dev/hidraw2", 12)) return 0;
+  if (!pathname || !fake_deck_enabled()) return 0;
+  if (int slot = sony_pad_slot(pathname)) return slot_model(slot_pad_type(slot));
+  if (strncmp(pathname, "/dev/hidraw2", 12)) return 0;
   if (!strcmp(pathname, DS4_HIDRAW_PATH)) return live_pad_type() == PAD_TYPE_DS4 ? 4 : 0;
   if (!strcmp(pathname, DUALSENSE_HIDRAW_PATH)) return live_pad_type() == PAD_TYPE_DUALSENSE ? 5 : 0;
   if (!strcmp(pathname, SWITCH_HIDRAW_PATH)) return live_pad_type() == PAD_TYPE_SWITCH_PRO ? 6 : 0;
@@ -1543,7 +1580,8 @@ __attribute__((visibility("hidden"))) static bool is_withdrawn_pad_path(const ch
   if (strncmp(event, "event", 5) && strncmp(event, "js", 2)) return false;
   int number = get_event_number(event);
   if (number < 0 || number >= UINPUT_EVENT_BASE) return false;
-  return number == 0 || !process_is_steam_client();
+  // Local Desktop: the physical controllers' slots (1 to 3) are hidraw pads only, never evdev ones.
+  return number == 0 || number < SLOT_COUNT || !process_is_steam_client();
 }
 
 static bool fake_pad_withdrawn(const FakeController &fake) {
@@ -1737,7 +1775,7 @@ __attribute__((visibility("hidden"))) static void *sony_report_thread(void *arg)
   DeckExtras extras;
   SonyTouch touch;
   const uint64_t start_us = monotonic_us();
-  while (live_pad_type() == type) {
+  while (slot_pad_type(self->slot) == type) {
     if (read_snapshot(self->ring, snap) && snap.generation == ring_generation(self->ring)) {
       buttons = snap.buttons;
       memcpy(axes, snap.axes, sizeof(axes));
@@ -1757,8 +1795,10 @@ __attribute__((visibility("hidden"))) static void *sony_report_thread(void *arg)
 
 static void *switch_report_thread(void *arg);
 
-__attribute__((visibility("hidden"))) static int open_deck_hidraw(int flags, uint8_t sony = 0) {
-  const char *path = sony == 4 ? DS4_HIDRAW_PATH : sony == 5 ? DUALSENSE_HIDRAW_PATH
+__attribute__((visibility("hidden"))) static int open_deck_hidraw(int flags, uint8_t sony = 0, int slot = 0) {
+  char slot_path[24];
+  snprintf(slot_path, sizeof(slot_path), "/dev/hidraw%u", SLOT_HIDRAW_MINOR_BASE + slot);
+  const char *path = slot ? slot_path : sony == 4 ? DS4_HIDRAW_PATH : sony == 5 ? DUALSENSE_HIDRAW_PATH
                    : sony == 6 ? SWITCH_HIDRAW_PATH : DECK_HIDRAW_PATH;
   static auto my_open = reinterpret_cast<int (*)(const char *, int, ...)>(dlsym(RTLD_NEXT, "open"));
   if (!process_is_steam_client()) {
@@ -1766,7 +1806,7 @@ __attribute__((visibility("hidden"))) static int open_deck_hidraw(int flags, uin
     errno = ENOENT;
     return -1;
   }
-  std::string ring_path = get_ring_path_for_slot(0);
+  std::string ring_path = get_ring_path_for_slot(slot);
   int ring_fd = ring_path.empty() ? -1 : my_open(ring_path.c_str(), O_RDONLY | O_CLOEXEC);
   if (ring_fd < 0) {
     Logger::log("deck: %s refused: ring %s not openable (%s)\n", path,
@@ -1803,6 +1843,7 @@ __attribute__((visibility("hidden"))) static int open_deck_hidraw(int flags, uin
   deck->ring = static_cast<FakeInputRingHeader *>(mapping);
   deck->mapping_size = mapping_size;
   deck->sony = sony;
+  deck->slot = slot;
   {
     std::lock_guard<std::recursive_mutex> guard(controller_mutex());
     deck_map()[pair[0]] = deck;
@@ -2319,6 +2360,7 @@ static constexpr const char *TRITON_DEVPATH = "/devices/droiddeck/bluetooth/0005
 static constexpr const char *SWITCH_DEVPATH = "/devices/droiddeck/bluetooth/0005:057E:2009.0007/hidraw/hidraw22";
 
 __attribute__((visibility("hidden"))) static int pad_type_uevent(uint32_t type, const char *action) {
+  if (type == PAD_TYPE_NONE) return 0;
   if (type == PAD_TYPE_DECK)
     return inject_uevent(action, DECK_DEVPATH, "hidraw", DECK_HIDRAW_PATH, DECK_HIDRAW_MAJOR, DECK_HIDRAW_MINOR);
   if (type == PAD_TYPE_DS4)
@@ -2382,10 +2424,13 @@ __attribute__((visibility("hidden"))) static void show_pad_class_link(uint32_t t
 __attribute__((visibility("hidden"))) static void *pad_type_thread(void *) {
   static const char *kNames[] = {"Steam Deck controller", "Steam Controller", "Xbox 360 controller",
                                  "DualShock 4", "DualSense", "Switch Pro Controller"};
+  // Local Desktop: slot 0 can also have no controller (PAD_TYPE_NONE), while nothing drives it.
+  auto name = [](uint32_t type) { return type <= PAD_TYPE_LAST ? kNames[type] : "no controller"; };
   uint32_t was = live_pad_type();
   show_pad_class_link(was);
   bool paired = fake_triton_enabled() && triton_connected();
-  Logger::log("pad: a %s at start%s\n", kNames[was % 6], paired ? ", the paired Steam Controller connected" : "");
+  Logger::log("pad: %s%s at start%s\n", was <= PAD_TYPE_LAST ? "a " : "", name(was),
+              paired ? ", the paired Steam Controller connected" : "");
   for (;;) {
     struct timespec interval = {0, 50 * 1000 * 1000};
     nanosleep(&interval, nullptr);
@@ -2398,14 +2443,14 @@ __attribute__((visibility("hidden"))) static void *pad_type_thread(void *) {
                   connected ? "connected" : "disconnected", sent);
     }
     uint32_t now = live_pad_type();
-    if (now == was || now > PAD_TYPE_LAST) continue;
+    if (now == was || (now > PAD_TYPE_LAST && now != PAD_TYPE_NONE)) continue;
     int removed = pad_type_uevent(was, "remove");
     show_pad_class_link(now);
     struct timespec settle = {0, 300 * 1000 * 1000};
     nanosleep(&settle, nullptr);
     int added = pad_type_uevent(now, "add");
-    if (was != PAD_TYPE_XBOX) poke_hidraw_watchers(pad_type_minor(was));
-    if (now != PAD_TYPE_XBOX) poke_hidraw_watchers(pad_type_minor(now));
+    if (was != PAD_TYPE_XBOX && was != PAD_TYPE_NONE) poke_hidraw_watchers(pad_type_minor(was));
+    if (now != PAD_TYPE_XBOX && now != PAD_TYPE_NONE) poke_hidraw_watchers(pad_type_minor(now));
     if (was == PAD_TYPE_XBOX || now == PAD_TYPE_XBOX) {
       std::string node = std::string(fake_hook_dir()) + "/event0";
       std::string aside = std::string(fake_hook_dir()) + "/.event0-switching";
@@ -2417,7 +2462,8 @@ __attribute__((visibility("hidden"))) static void *pad_type_thread(void *) {
         Logger::log("pad: event0 not moved (%s)\n", strerror(errno));
       }
     }
-    Logger::log("pad: now a %s (udev events to %d/%d monitors)\n", kNames[now], removed, added);
+    Logger::log("pad: now %s%s (udev events to %d/%d monitors)\n", now <= PAD_TYPE_LAST ? "a " : "", name(now),
+                removed, added);
     was = now;
   }
   return nullptr;
@@ -2869,14 +2915,20 @@ __attribute__((visibility("hidden"))) static void switch_reply(const DeckHidraw 
   report[13] = ack;
   report[14] = subcommand;
   memcpy(report + 15, data, std::min<size_t>(size, SWITCH_REPORT_BYTES - 15));
-  // The input reports can fill the socket for a moment while Steam is busy; a driver waits for its
-  // reply (and may give up on the pad without it), so keep trying for up to 100 ms.
-  for (int attempt = 0;; attempt++) {
-    if (send(pad.peer, report, sizeof(report), MSG_DONTWAIT | MSG_NOSIGNAL) >= 0) return;
-    if ((errno != EAGAIN && errno != EWOULDBLOCK) || attempt == 50) break;
-    sleep_us(2000);
+  // The socket holds only a few reports, so stale input reports are dropped rather than queued.
+  // While Steam is busy (at start) the input reports can fill it; a driver waits for its reply and
+  // may give up on the pad without it, so the report thread holds back while a reply waits, and the
+  // reply takes the first free place, for up to 500 ms.
+  pad.replying.fetch_add(1, std::memory_order_acq_rel);
+  bool sent = false;
+  for (int attempt = 0; attempt < 250 && !sent; attempt++) {
+    sent = send(pad.peer, report, sizeof(report), MSG_DONTWAIT | MSG_NOSIGNAL) >= 0;
+    if (!sent && errno != EAGAIN && errno != EWOULDBLOCK) break;
+    if (!sent) sleep_us(2000);
   }
-  Logger::log("switch: reply to 0x%02x not sent (%s)\n", subcommand, strerror(errno));
+  int error = errno;
+  pad.replying.fetch_sub(1, std::memory_order_acq_rel);
+  if (!sent) Logger::log("switch: reply to 0x%02x not sent (%s)\n", subcommand, strerror(error));
 }
 
 __attribute__((visibility("hidden"))) static void switch_subcommand(const DeckHidraw &pad, const uint8_t *data,
@@ -2892,6 +2944,7 @@ __attribute__((visibility("hidden"))) static void switch_subcommand(const DeckHi
   case 0x02: {  // device info: firmware, type, MAC, colours from the flash
     uint8_t info[12] = {0x03, 0x48, 0x03, 0x02};
     memcpy(info + 4, SWITCH_MAC, 6);
+    info[9] = static_cast<uint8_t>(SWITCH_MAC[5] + pad.slot);
     info[10] = 0x01;
     info[11] = 0x01;
     switch_reply(pad, subcommand, 0x82, info, sizeof(info));
@@ -2930,7 +2983,7 @@ __attribute__((visibility("hidden"))) static void switch_subcommand(const DeckHi
 // Rumble in reports 0x01 and 0x10: per side, a high band (bytes 0-1) and a low band (bytes 2-3)
 // frequency and amplitude, Nintendo's encoding. An amplitude byte above the idle value counts as
 // rumble on that motor; it is only a rough stand-in for the HD rumble's strength.
-__attribute__((visibility("hidden"))) static void switch_rumble(const uint8_t *rumble) {
+__attribute__((visibility("hidden"))) static void switch_rumble(const uint8_t *rumble, int slot) {
   auto strength = [](const uint8_t *side) {
     int high = (side[1] & 0xfe) >> 1;  // high band amplitude, 7 bits
     int low = side[3] & 0x7f;          // low band amplitude, 7 bits
@@ -2938,15 +2991,15 @@ __attribute__((visibility("hidden"))) static void switch_rumble(const uint8_t *r
     return std::min(65535, value * 65535 / 0x64);
   };
   int left = strength(rumble), right = strength(rumble + 4);
-  static std::atomic<int> last{-1};
+  static std::atomic<int> last[SLOT_COUNT];
   int now = left << 16 | right;
-  if (last.exchange(now) == now) return;
-  send_vibration(left, right, left || right ? 2000 : 0, 0);
+  if (slot < 0 || slot >= SLOT_COUNT || last[slot].exchange(now) == now) return;
+  send_vibration(left, right, left || right ? 2000 : 0, static_cast<uint16_t>(slot));
 }
 
 __attribute__((visibility("hidden"))) static void switch_output(const DeckHidraw &pad, const uint8_t *data, size_t size) {
   if (!data || size < 10) return;
-  if (data[0] == 0x01 || data[0] == 0x10) switch_rumble(data + 2);
+  if (data[0] == 0x01 || data[0] == 0x10) switch_rumble(data + 2, pad.slot);
   if (data[0] == 0x01) switch_subcommand(pad, data, size);
 }
 
@@ -2954,7 +3007,19 @@ __attribute__((visibility("hidden"))) static void *switch_report_thread(void *ar
   auto *holder = static_cast<std::shared_ptr<DeckHidraw> *>(arg);
   std::shared_ptr<DeckHidraw> self = *holder;
   delete holder;
-  while (live_pad_type() == PAD_TYPE_SWITCH_PRO) {
+  int room = 0;
+  socklen_t room_size = sizeof(room);
+  getsockopt(self->peer, SOL_SOCKET, SO_SNDBUF, &room, &room_size);
+  while (slot_pad_type(self->slot) == PAD_TYPE_SWITCH_PRO) {
+    // Like the kernel's hidraw, never let old input reports stand in the way: skip one while a
+    // reply waits, or while half the socket is still unread (Steam stops reading for seconds while
+    // it sets up), so a reply always finds room and Steam reads fresh state when it comes back.
+    int unread = 0;
+    if (self->replying.load(std::memory_order_acquire) ||
+        (syscall(SYS_ioctl, self->peer, SIOCOUTQ, &unread) == 0 && room > 0 && unread > room / 2)) {
+      sleep_us(controller_report_interval_us(SWITCH_REPORT_INTERVAL_US));
+      continue;
+    }
     uint8_t report[SWITCH_REPORT_BYTES];
     build_switch_report(report, switch_now(*self));
     if (send(self->peer, report, sizeof(report), MSG_DONTWAIT | MSG_NOSIGNAL) < 0 &&
@@ -2968,7 +3033,9 @@ __attribute__((visibility("hidden"))) static void *switch_report_thread(void *ar
 }
 
 __attribute__((visibility("hidden"))) static int ioctl_switch(DeckHidraw &pad, ioctl_request_t op, void *argp) {
-  (void)pad;
+  char mac[18];
+  snprintf(mac, sizeof(mac), "%02x:%02x:%02x:%02x:%02x:%02x", SWITCH_MAC[0], SWITCH_MAC[1], SWITCH_MAC[2],
+           SWITCH_MAC[3], SWITCH_MAC[4], SWITCH_MAC[5] + pad.slot);
   if (_IOC_TYPE(op) != 'H') {
     errno = ENOTTY;
     return -1;
@@ -2995,7 +3062,7 @@ __attribute__((visibility("hidden"))) static int ioctl_switch(DeckHidraw &pad, i
   }
   case 0x04: return copy_ioctl_string(op, argp, "Pro Controller");
   case 0x05: return copy_ioctl_string(op, argp, "bluetooth-droiddeck-6");
-  case 0x08: return copy_ioctl_string(op, argp, "02:4c:44:00:00:06");
+  case 0x08: return copy_ioctl_string(op, argp, mac);
   case 0x06:
     return static_cast<int>(_IOC_SIZE(op));
   case 0x07:  // a Pro Controller has no feature reports
@@ -3007,6 +3074,135 @@ __attribute__((visibility("hidden"))) static int ioctl_switch(DeckHidraw &pad, i
   }
 }
 // ---- end of the Switch Pro Controller ----
+
+// ---- Local Desktop: the physical controllers' slots in the Steam client ----
+// Every 50 ms the Steam client's libfakeinput reads slots 1 to 3. When a slot gains a controller it
+// describes /dev/hidraw(32 + slot) in sysfs and udev (under /sys/devices/droiddeck/slotN, the
+// directory the app binds) and then tells Steam's udev monitor; when it loses one, the other way
+// round. Steam then opens the node, which open_deck_hidraw serves from that slot's ring.
+struct SlotPad {
+  uint32_t type;
+  const char *ids;  // HID_ID's bus:vendor:product
+  const char *name;
+  const uint8_t *descriptor;
+  size_t descriptor_size;
+};
+
+__attribute__((visibility("hidden"))) static const SlotPad *slot_pad(uint32_t type) {
+  static const SlotPad pads[] = {
+      {PAD_TYPE_SWITCH_PRO, "0005:057E:2009", "Pro Controller", kSwitchProReportDescriptor,
+       sizeof(kSwitchProReportDescriptor)},
+  };
+  for (const SlotPad &pad : pads)
+    if (pad.type == type) return &pad;
+  return nullptr;
+}
+
+__attribute__((visibility("hidden"))) static std::string slot_hid_dir(int slot, const SlotPad &pad) {
+  char name[64];
+  snprintf(name, sizeof(name), "/sys/devices/droiddeck/slot%d/%s.%04X", slot, pad.ids, 0x10 + slot);
+  return name;
+}
+
+__attribute__((visibility("hidden"))) static void slot_mkdirs(const std::string &path) {
+  for (size_t at = 1; (at = path.find('/', at)) != std::string::npos; at++) mkdir(path.substr(0, at).c_str(), 0755);
+  mkdir(path.c_str(), 0755);
+}
+
+__attribute__((visibility("hidden"))) static void remove_slot_sysfs(int slot, const SlotPad &pad) {
+  unsigned minor = SLOT_HIDRAW_MINOR_BASE + slot;
+  std::string node = "hidraw" + std::to_string(minor);
+  std::string hid = slot_hid_dir(slot, pad);
+  std::string hidraw = hid + "/hidraw/" + node;
+  unlink(("/sys/class/hidraw/" + node).c_str());
+  unlink(("/sys/dev/char/" + std::to_string(DECK_HIDRAW_MAJOR) + ":" + std::to_string(minor)).c_str());
+  unlink(("/run/udev/data/c" + std::to_string(DECK_HIDRAW_MAJOR) + ":" + std::to_string(minor)).c_str());
+  for (const char *name : {"uevent", "dev", "subsystem", "device"}) unlink((hidraw + "/" + name).c_str());
+  rmdir(hidraw.c_str());
+  rmdir((hid + "/hidraw").c_str());
+  for (const char *name : {"uevent", "report_descriptor", "subsystem"}) unlink((hid + "/" + name).c_str());
+  rmdir(hid.c_str());
+}
+
+__attribute__((visibility("hidden"))) static void describe_slot_sysfs(int slot, const SlotPad &pad) {
+  unsigned minor = SLOT_HIDRAW_MINOR_BASE + slot;
+  std::string node = "hidraw" + std::to_string(minor);
+  std::string hid = slot_hid_dir(slot, pad);
+  std::string hidraw = hid + "/hidraw/" + node;
+  slot_mkdirs(hidraw);
+  char mac[18];
+  snprintf(mac, sizeof(mac), "%02x:%02x:%02x:%02x:%02x:%02x", SWITCH_MAC[0], SWITCH_MAC[1], SWITCH_MAC[2],
+           SWITCH_MAC[3], SWITCH_MAC[4], SWITCH_MAC[5] + slot);
+  std::string bus(pad.ids, 4), vendor(pad.ids + 5, 4), product(pad.ids + 10, 4);
+  sysfs_write(hid + "/uevent", "DRIVER=hid-generic\nHID_ID=" + bus + ":0000" + vendor + ":0000" + product +
+                                   "\nHID_NAME=" + pad.name + "\nHID_PHYS=localdesktop-slot" + std::to_string(slot) +
+                                   "\nHID_UNIQ=" + mac + "\nMODALIAS=hid:b" + bus + "g0001v0000" + vendor + "p0000" +
+                                   product + "\n");
+  sysfs_write(hid + "/report_descriptor",
+              std::string(reinterpret_cast<const char *>(pad.descriptor), pad.descriptor_size));
+  sysfs_link(hid + "/subsystem", "/sys/bus/hid");
+  std::string devnum = std::to_string(DECK_HIDRAW_MAJOR) + ":" + std::to_string(minor);
+  sysfs_write(hidraw + "/uevent", "MAJOR=" + std::to_string(DECK_HIDRAW_MAJOR) + "\nMINOR=" + std::to_string(minor) +
+                                      "\nDEVNAME=" + node + "\n");
+  sysfs_write(hidraw + "/dev", devnum + "\n");
+  sysfs_link(hidraw + "/subsystem", "/sys/class/hidraw");
+  sysfs_link(hidraw + "/device", hid);
+  sysfs_link("/sys/dev/char/" + devnum, hidraw);
+  sysfs_write("/run/udev/data/c" + devnum, "I:1\nE:ID_INPUT=1\nE:ID_INPUT_JOYSTICK=1\n");
+  sysfs_link("/sys/class/hidraw/" + node, hidraw);
+}
+
+__attribute__((visibility("hidden"))) static int slot_uevent(int slot, const SlotPad &pad, const char *action) {
+  unsigned minor = SLOT_HIDRAW_MINOR_BASE + slot;
+  std::string node = "hidraw" + std::to_string(minor);
+  std::string devpath = slot_hid_dir(slot, pad).substr(4) + "/hidraw/" + node;  // without /sys
+  std::string devname = "/dev/" + node;
+  int sent = inject_uevent(action, devpath.c_str(), "hidraw", devname.c_str(), DECK_HIDRAW_MAJOR, minor);
+  poke_hidraw_watchers(minor);
+  return sent;
+}
+
+__attribute__((visibility("hidden"))) static void *slot_thread(void *) {
+  uint32_t shown[SLOT_COUNT];
+  for (int slot = 1; slot < SLOT_COUNT; slot++) {
+    shown[slot] = PAD_TYPE_NONE;
+    // A Steam that died may have left a slot described.
+    for (uint32_t type = 0; type <= PAD_TYPE_LAST; type++)
+      if (const SlotPad *pad = slot_pad(type)) remove_slot_sysfs(slot, *pad);
+  }
+  for (;;) {
+    for (int slot = 1; slot < SLOT_COUNT; slot++) {
+      uint32_t now = slot_pad_type(slot);
+      const SlotPad *pad = slot_pad(now);
+      if (!pad) now = PAD_TYPE_NONE;
+      if (now == shown[slot]) continue;
+      if (const SlotPad *was = slot_pad(shown[slot])) {
+        int sent = slot_uevent(slot, *was, "remove");
+        remove_slot_sysfs(slot, *was);
+        Logger::log("slot %d: the %s went (udev event to %d monitors)\n", slot, was->name, sent);
+      }
+      if (pad) {
+        describe_slot_sysfs(slot, *pad);
+        int sent = slot_uevent(slot, *pad, "add");
+        Logger::log("slot %d: a %s on /dev/hidraw%u (udev event to %d monitors)\n", slot, pad->name,
+                    SLOT_HIDRAW_MINOR_BASE + slot, sent);
+      }
+      shown[slot] = now;
+    }
+    struct timespec interval = {0, 50 * 1000 * 1000};
+    nanosleep(&interval, nullptr);
+  }
+  return nullptr;
+}
+
+__attribute__((constructor)) static void start_slot_watch() {
+  config();
+  if (!process_is_steam_client() || !fake_deck_enabled()) return;
+  pthread_t thread;
+  if (pthread_create(&thread, nullptr, slot_thread, nullptr) == 0) pthread_detach(thread);
+}
+// ---- end of the slots ----
+
 
 __attribute__((visibility("hidden"))) static int
 ioctl_deck(DeckHidraw &deck, ioctl_request_t op, void *argp) {
@@ -3432,7 +3628,8 @@ EXPORT int open(const char *pathname, int flags, ...) {
   if (is_deck_hidraw_path(pathname)) return open_deck_hidraw(flags);
   if (is_triton_hidraw_path(pathname)) return open_triton_hidraw(flags, false);
   if (is_triton_pad_path(pathname)) return open_triton_hidraw(flags, true);
-  if (int sony = sony_pad_path(pathname)) return open_deck_hidraw(flags, static_cast<uint8_t>(sony));
+  if (int sony = sony_pad_path(pathname))
+    return open_deck_hidraw(flags, static_cast<uint8_t>(sony), sony_pad_slot(pathname));
   if (is_touch_hidraw_path(pathname)) return open_touch_hidraw(flags);
   if (is_withdrawn_pad_path(pathname)) {
     errno = ENOENT;
@@ -3510,7 +3707,8 @@ EXPORT int openat(int dirfd, const char *pathname, int flags, ...) {
   if (is_deck_hidraw_path(pathname)) return open_deck_hidraw(flags);
   if (is_triton_hidraw_path(pathname)) return open_triton_hidraw(flags, false);
   if (is_triton_pad_path(pathname)) return open_triton_hidraw(flags, true);
-  if (int sony = sony_pad_path(pathname)) return open_deck_hidraw(flags, static_cast<uint8_t>(sony));
+  if (int sony = sony_pad_path(pathname))
+    return open_deck_hidraw(flags, static_cast<uint8_t>(sony), sony_pad_slot(pathname));
   if (is_touch_hidraw_path(pathname)) return open_touch_hidraw(flags);
   if (is_withdrawn_pad_path(pathname)) {
     errno = ENOENT;
@@ -3589,7 +3787,9 @@ static int fake_stat_path(const char *pathname, S *statbuf, Real real) {
   if (int sony = sony_pad_path(pathname)) {
     memset(statbuf, 0, sizeof(*statbuf));
     statbuf->st_mode = S_IFCHR | 0666;
-    statbuf->st_rdev = makedev(DECK_HIDRAW_MAJOR, sony_minor(static_cast<uint8_t>(sony)));
+    int slot = sony_pad_slot(pathname);
+    statbuf->st_rdev = makedev(DECK_HIDRAW_MAJOR, slot ? SLOT_HIDRAW_MINOR_BASE + slot
+                                                       : sony_minor(static_cast<uint8_t>(sony)));
     return 0;
   }
   if (is_triton_hidraw_path(pathname) || is_triton_pad_path(pathname)) {
@@ -3646,6 +3846,7 @@ static int fake_stat_fd(int fd, S *buf, Real real) {
     buf->st_mode = (buf->st_mode & ~S_IFMT) | S_IFCHR;
     const auto &device = *deck_map()[fd];
     unsigned int minor = device.touch ? TOUCH_HIDRAW_MINOR
+                       : device.slot ? SLOT_HIDRAW_MINOR_BASE + device.slot
                        : device.sony ? sony_minor(device.sony)
                        : device.emulated ? TRITON_PAD_HIDRAW_MINOR
                        : device.triton ? TRITON_HIDRAW_MINOR : DECK_HIDRAW_MINOR;

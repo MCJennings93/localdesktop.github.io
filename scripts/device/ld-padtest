@@ -20,7 +20,7 @@ ABS = dict(LX=0, LY=1, RX=3, RY=4, HX=0x10, HY=0x11)
 
 WATCH = """python3 -c '
 import struct, time
-f = open("/run/localdesktop-pad/fakeinput-rings/ring0", "rb", buffering=0)
+f = open("/run/localdesktop-pad/fakeinput-rings/ring1", "rb", buffering=0)
 start, down, held = time.time(), None, None
 while time.time() - start < 6:
     f.seek(40)
@@ -71,11 +71,27 @@ class Pad:
         self.p.wait(timeout=5)
 
 
-def state():
-    out = subprocess.run([RUN, "localdesktop-pad state", "10"], capture_output=True, text=True).stdout
+# The slot the controller under test drives: a Nintendo controller has slot 1 of its own (the
+# first free one); other controllers drive the Steam Deck controller's slot 0.
+slot = 1
+
+
+def state(of=None):
+    out = subprocess.run([RUN, "localdesktop-pad --slot %d state" % (slot if of is None else of), "10"],
+                         capture_output=True, text=True).stdout
     buttons = re.search(r"buttons: (.*)", out).group(1).split()
     axes = json.loads(re.search(r"axes: (\[.*\])", out).group(1))
-    return [] if buttons == ["-"] else buttons, axes
+    pad_type = re.search(r"pad type: (.*)", out).group(1)
+    return [] if buttons == ["-"] else buttons, axes, pad_type
+
+
+def check_slot(name, of, want_type, want_buttons=()):
+    time.sleep(0.25)
+    buttons, _, pad_type = state(of)
+    ok = pad_type in ((want_type,) if isinstance(want_type, str) else want_type) and sorted(buttons) == sorted(want_buttons)
+    print(("PASS " if ok else "FAIL ") + name + ("" if ok else f"  got {pad_type} {buttons}"), flush=True)
+    if not ok:
+        failures.append(name)
 
 
 failures = []
@@ -83,7 +99,7 @@ failures = []
 
 def check(name, want_buttons=(), **want_axes):
     time.sleep(0.25)
-    buttons, axes = state()
+    buttons, axes, _ = state()
     names = dict(LX=0, LY=1, RX=2, RY=3, RT=4, LT=5, HX=6, HY=7)
     want = [0] * 8
     for axis, value in want_axes.items():
@@ -100,9 +116,17 @@ def main():
     top = subprocess.run(["adb", "shell", "dumpsys activity activities | grep -m1 topResumedActivity"], capture_output=True, text=True).stdout
     if "io.github.localdesktop" not in top:
         sys.exit("the app isn't in the foreground (a lock screen?)")
+    global slot
     pad = Pad()
     try:
+        time.sleep(1.0)
+        check_slot("the Switch Pro Controller has slot 1, as a Switch Pro", 1, "switchpro")
         check("nothing held to start with")
+        pad.key("A", 1)
+        # Slot 0's Steam Deck controller is there only while in use: the on-screen gamepad shown, or a
+        # controller without a slot of its own connected.
+        check_slot("its A drives slot 1, not the Steam Deck controller's slot 0", 0, ("none", "deck"))
+        pad.key("A", 0)
         for name, deck in [("A", "A"), ("B", "B"), ("X", "X"), ("Y", "Y"), ("L", "L1"), ("R", "R1"), ("PLUS", "MENU"),
                            ("MINUS", "VIEW"), ("LS", "L3"), ("RS", "R3")]:
             pad.key(name, 1)
@@ -140,13 +164,17 @@ def main():
             failures.append("tap")
         pad.key("A", 1); time.sleep(0.2); pad.close(); time.sleep(1.5)
         check("a controller unplugged with a button down doesn't leave it held")
+        check_slot("unplugged, it leaves slot 1", 1, "-")
     finally:
         if pad.p.poll() is None:
             pad.p.kill()
     # On other controllers, Android's keycodes are the labels already, so nothing is swapped: an Xbox One pad
     # (045e:02ea, Android's Vendor_045e_Product_02ea.kl) maps BTN_A to its A and BTN_X to its X.
+    slot = 0
     pad = Pad(vid=0x045e, pid=0x02ea, name="ld-padtest xbox")
     try:
+        time.sleep(1.0)
+        check_slot("an Xbox pad (no slot of its own) brings the Steam Deck controller", 0, "deck")
         for code, deck in [(0x130, "A"), (0x131, "B"), (0x133, "X"), (0x134, "Y")]:
             pad.event((EV_KEY, code, 1)); check(f"Xbox {deck} is the Deck's {deck}", [deck])
             pad.event((EV_KEY, code, 0)); check(f"Xbox {deck} released", [])

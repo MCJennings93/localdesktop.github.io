@@ -11,8 +11,10 @@
 #   localdesktop-pad tap A [ms]       press and release
 #   localdesktop-pad stick left|right X Y    -1..1      localdesktop-pad trigger left|right 0..1
 #   localdesktop-pad dpad up|down|left|right|none       localdesktop-pad state
+#   localdesktop-pad --slot N COMMAND ...  the same on slot N's ring (1 to 3: a physical controller's)
 import mmap
 import os
+import shlex
 import shutil
 import struct
 import sys
@@ -21,6 +23,10 @@ import time
 RUN = "/run/localdesktop-pad"
 INPUT_DIR = RUN + "/fake-input"
 RING = RUN + "/fakeinput-rings/ring0"
+# One ring per controller slot: 0 the on-screen gamepad's (this script's), 1 to 3 the physical
+# controllers' own, which the app fills and libfakeinput serves to Steam as /dev/hidraw33 to 35.
+SLOTS = 4
+RINGS = [RUN + "/fakeinput-rings/ring%d" % slot for slot in range(SLOTS)]
 LOG = RUN + "/pad.log"
 # Android refuses to list /sys, /sys/class and /sys/bus; libfakeinput lists these stand-ins for them
 # in the Steam client, so libudev finds the hidraw class.
@@ -165,13 +171,21 @@ def clear_stale_pads():
 def create_ring():
     os.makedirs(INPUT_DIR, exist_ok=True)
     os.makedirs(os.path.dirname(RING), exist_ok=True)
-    with open(RING, "wb") as f:
-        f.write(struct.pack("<IIII", RING_MAGIC, RING_VERSION, EVENT_SIZE, CAPACITY))
-        f.truncate(FILE_SIZE)
+    for path in RINGS:
+        with open(path, "wb") as f:
+            f.write(struct.pack("<IIII", RING_MAGIC, RING_VERSION, EVENT_SIZE, CAPACITY))
+            f.truncate(FILE_SIZE)
+
+
+# The ring the commands work on: slot 0's unless --slot says otherwise.
+current_ring = RING
+PAD_TYPE_OFFSET = RING_SIZE + 44  # libfakeinput's DeckImu::pad_type
+PAD_TYPES = {0: "deck", 1: "steamcontroller", 2: "xbox360", 3: "dualshock4", 4: "dualsense", 5: "switchpro",
+             0xff: "none"}
 
 
 def ring():
-    f = open(RING, "r+b")
+    f = open(current_ring, "r+b")
     return f, mmap.mmap(f.fileno(), FILE_SIZE)
 
 
@@ -208,6 +222,10 @@ def side(name, left, right):
 def main(args):
     if not args:
         sys.exit(__doc__ or "usage: see the comment at the top of %s" % sys.argv[0])
+    global current_ring
+    if args[:1] == ["--slot"] and len(args) > 2:
+        current_ring = RINGS[int(args[1])]
+        args = args[2:]
     command, rest = args[0], args[1:]
     if command == "setup":
         describe()
@@ -216,14 +234,14 @@ def main(args):
         clear_stale_pads()
         return
     if command == "env":
-        for name, value in (("FAKE_EVDEV_DIR", INPUT_DIR), ("FAKE_EVDEV_MEMFD_PATHS", "0=" + RING),
+        for name, value in (("FAKE_EVDEV_DIR", INPUT_DIR), ("FAKE_EVDEV_MEMFD_PATHS", ";".join("%d=%s" % (slot, path) for slot, path in enumerate(RINGS))),
                             ("FAKE_EVDEV_IDENTITY", "xbox360"), ("FAKE_EVDEV_VIBRATION", "1"),
                             ("FAKE_EVDEV_UINPUT", "1"), ("FAKE_EVDEV_DECK", "1"),
                             ("FAKE_EVDEV_PAD_TYPE", "deck"), ("FAKE_DECK_SYSFS_LISTING", LISTING),
                             ("FAKE_EVDEV_LOG", "1"),
                             ("FAKE_EVDEV_LOG_FILE", LOG), ("SDL_JOYSTICK_DISABLE_UDEV", "1"),
                             ("SDL_HIDAPI_JOYSTICK_DISABLE_UDEV", "1")):
-            print("%s=%s" % (name, value))
+            print("%s=%s" % (name, shlex.quote(value)))  # the ring list has semicolons
         return
     f, m = ring()
     buttons, axes = read_state(m)
@@ -245,7 +263,9 @@ def main(args):
                               "none": (0, 0)}[rest[0]]
     elif command == "state":
         held = [name for name, bit in BUTTONS.items() if buttons & (1 << bit)]
-        print("buttons: %s\naxes: %s" % (" ".join(held) or "-", axes))
+        pad_type, = struct.unpack_from("<I", m, PAD_TYPE_OFFSET)
+        shown = PAD_TYPES.get(pad_type & 0xff, "?") if pad_type & 0x80000000 else "-"
+        print("buttons: %s\naxes: %s\npad type: %s" % (" ".join(held) or "-", axes, shown))
         return
     else:
         sys.exit("localdesktop-pad: unknown command %s" % command)

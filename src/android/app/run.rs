@@ -185,7 +185,7 @@ impl ApplicationHandler<AppUserEvent> for PolarBearApp {
             return;
         };
         match event {
-            DeviceEvent::Motion { axis, value } => backend.gamepad.controller_axis(axis, value),
+            DeviceEvent::Motion { axis, value } => backend.gamepad.controller_axis(device.android_id(), axis, value),
             DeviceEvent::Button { button, state } => {
                 let pressed = state == ElementState::Pressed;
                 let android_app = &self.frontend.android_app;

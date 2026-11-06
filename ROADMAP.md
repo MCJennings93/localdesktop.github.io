@@ -70,11 +70,14 @@ Open:
      udev's netlink socket and sysfs/udev entries for each virtual pad
      ([Steam Deck controller](docs/steam-deck-controller.md)). Follow-up: merge the ARM
      `udev-netlink-shim` (KWin) with libfakeinput's `udevmon.c`, which do the same socket trick.
-   - **Each controller as itself.** Step 1 done: a Nintendo controller is presented to Steam as a
-     Switch Pro Controller (libfakeinput speaks Nintendo's Bluetooth HID protocol on
-     `/dev/hidraw22`), so Steam's Switch glyphs, layouts and community configs apply; tested with a
-     real Switch Pro Controller in Steam and in Bastion. Next: one ring and emulated device per
-     physical controller (separate players), then Sony controllers as DualShock 4/DualSense.
+   - **Each controller as itself.** Done for Nintendo controllers: each physical controller gets
+     a slot of its own (its own ring and emulated device, so its own player in Steam and games); a
+     Nintendo one is a Switch Pro Controller (Nintendo's Bluetooth HID protocol), so Steam's Switch
+     glyphs, layouts and community configs apply. The emulated Steam Deck controller is there only
+     while in use (on-screen gamepad shown, or a controller without a slot of its own). Tested with
+     a real Switch Pro Controller in Steam and Bastion, and with `ld-padtest`. Next: Sony controllers
+     as DualShock 4/DualSense on their own slots, others as Xbox pads; then rumble, which doesn't
+     reach Android yet.
    - **Gyro.** Built: a controller's motion sensors, read through Android's controller sensor API
      while Steam wants motion, become the emulated Deck's gyro and accelerometer (`ld-gyrotest`
      passes with a virtual DualShock 4). Needs a controller whose kernel driver exposes its IMU
