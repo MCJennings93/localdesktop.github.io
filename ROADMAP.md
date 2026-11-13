@@ -19,7 +19,9 @@ What works: Plasma Mobile with KWin GPU compositing and zero-copy dmabuf import,
 and Firefox on the GPU; Steam in Game Mode (gamescope nested in KWin, Steam Deck UI), with a
 progress notification while Steam starts or updates; Bastion (x86, FEX); the emulated Steam Deck
 controller in Steam's UI; Brave as the default browser (Firefox if Brave isn't installed); Chinese,
-Japanese and Korean text, with the right glyphs per language (Noto CJK). The guest's DNS follows Android's
+Japanese and Korean text, with the right glyphs per language (Noto CJK). The Android keyboard types into the desktop: a text field taking focus opens it, with the
+desktop fitting above it, and it goes away when the field loses focus (Plasma's own keyboard instead when the
+"Android keyboard" setting is off). The guest's DNS follows Android's
 network as it changes. Notifications mirrored between the desktop and Android,
 dismissals included ([architecture](docs/architecture.md)).
 
@@ -54,6 +56,9 @@ Open:
   unless audio holds it.
 
 ### 2. Compositor
+0. **Android keyboard text beyond ASCII:** keys still arrive as key presses, so accented letters, CJK and
+   emoji don't type. Committing text through the input method would carry any Unicode, and the field's
+   content type could pick the Android keyboard's layout (password, number).
 1. **Shade jank under the frame loop:** about 1 point higher than with the best loop on each
    desktop ([docs/frame-loop.md](docs/frame-loop.md)).
 2. **Multiple displays** (KWin virtual outputs per Android display), a later feature designed in

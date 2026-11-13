@@ -1,0 +1,14 @@
+#!/bin/sh
+# KWin's input method (startplasmamobile-localdesktop passes it as --inputmethod). With the app's
+# "Android keyboard" setting on, text fields open the Android keyboard (see
+# /usr/local/libexec/localdesktop-android-keyboard); with it off, Plasma's own keyboard types.
+# KWin hands over its connection in WAYLAND_SOCKET, which exec keeps.
+#
+# Managed by the Local Desktop app: it is rewritten on every app start, so local edits are lost.
+LOCALDESKTOP_TOUCH_KEYBOARD=1
+# Written by the app: LOCALDESKTOP_TOUCH_KEYBOARD=0 when the Android keyboard types.
+[ -r /tmp/localdesktop-output ] && . /tmp/localdesktop-output
+if [ "$LOCALDESKTOP_TOUCH_KEYBOARD" = 0 ] && [ -x /usr/local/libexec/localdesktop-android-keyboard ]; then
+    exec /usr/local/libexec/localdesktop-android-keyboard
+fi
+exec /usr/bin/plasma-keyboard "$@"

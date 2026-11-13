@@ -26,7 +26,7 @@ echo "$BUILD_ID" > "$TMP/managed/etc/localdesktop/build-id"
 # Modes come from here, not from the checkout: programs and shims 0755, everything else 0644.
 find "$TMP/managed" "$TMP/seed" -type d -exec chmod 755 {} +
 find "$TMP/managed" "$TMP/seed" -type f -exec chmod 644 {} +
-find "$TMP/managed/usr/local/bin" "$TMP/managed/usr/local/lib" -type f -exec chmod 755 {} +
+find "$TMP/managed/usr/local/bin" "$TMP/managed/usr/local/lib" "$TMP/managed/usr/local/libexec" -type f -exec chmod 755 {} +
 chmod 755 "$TMP/seed/root/.config/labwc-plasma/autostart"
 # Reproducible: fixed owner, order and timestamps, so an unchanged guest/ gives the same asset.
 tar -C "$TMP" --owner=0 --group=0 --numeric-owner --sort=name --mtime=@0 \

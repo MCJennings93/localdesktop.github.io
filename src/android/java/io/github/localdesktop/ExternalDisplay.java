@@ -97,6 +97,20 @@ public final class ExternalDisplay {
         });
     }
 
+    /** No text field on the desktop has focus any more: put the Android keyboard away. */
+    public static void hideKeyboard(final Activity activity) {
+        activity.runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                if (controls != null) {
+                    controls.hideKeyboard();
+                } else {
+                    PhoneKeyboard.hide();
+                }
+            }
+        });
+    }
+
     public static void stop(Activity activity) {
         activity.runOnUiThread(new Runnable() {
             @Override

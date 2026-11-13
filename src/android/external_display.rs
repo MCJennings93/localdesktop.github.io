@@ -95,7 +95,9 @@ struct Bridge {
 
 static BRIDGE: OnceLock<(Mutex<Bridge>, Condvar)> = OnceLock::new();
 
-/// The guest touches this when a text field takes focus (see `localdesktop-keyboard-relay`).
+/// The guest writes this when a text field takes focus, or "hide" in it once none has focus
+/// (`localdesktop-android-keyboard`, KWin's input method). A bare touch, as from
+/// `localdesktop-keyboard-relay`, asks for the keyboard too.
 const KEYBOARD_REQUEST: &str = "tmp/localdesktop-keyboard";
 
 fn bridge() -> &'static (Mutex<Bridge>, Condvar) {
@@ -117,7 +119,24 @@ fn watch_keyboard_requests(proxy: EventLoopProxy<AppUserEvent>) {
             let now = modified();
             if now != last {
                 last = now;
-                if now.is_some() && proxy.send_event(AppUserEvent::KeyboardRequested).is_err() {
+                if now.is_none() {
+                    continue;
+                }
+                let hide = || matches!(fs::read_to_string(&path), Ok(r) if r.trim() == "hide");
+                let event = if hide() {
+                    // Moving between text fields asks to hide, then at once to show again: keep
+                    // the keyboard up through that.
+                    thread::sleep(Duration::from_millis(150));
+                    last = modified();
+                    if hide() {
+                        AppUserEvent::KeyboardDismissed
+                    } else {
+                        AppUserEvent::KeyboardRequested
+                    }
+                } else {
+                    AppUserEvent::KeyboardRequested
+                };
+                if proxy.send_event(event).is_err() {
                     return;
                 }
             }
@@ -203,6 +222,11 @@ pub fn start(env: &mut JNIEnv, android_app: &AndroidApp) {
 /// Open the Android keyboard, over the trackpad or on the phone's screen.
 pub fn show_keyboard(env: &mut JNIEnv, android_app: &AndroidApp) {
     call_java(env, android_app, "showKeyboard");
+}
+
+/// Put the Android keyboard away: no text field on the desktop has focus any more.
+pub fn hide_keyboard(env: &mut JNIEnv, android_app: &AndroidApp) {
+    call_java(env, android_app, "hideKeyboard");
 }
 
 /// Keep the desktop on the monitor while the app is in the background.

@@ -29,6 +29,8 @@ pub enum AppUserEvent {
     ExternalPointer,
     /// A text field on the desktop took focus.
     KeyboardRequested,
+    /// No text field on the desktop has focus any more.
+    KeyboardDismissed,
     /// The Android keyboard on the phone's screen came up, changed height or went away.
     KeyboardInset,
 }

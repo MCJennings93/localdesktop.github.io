@@ -82,7 +82,7 @@ if [ ! -e /etc/localdesktop/kwin-qpainter ] && [ -c /dev/dri/renderD0 ] && [ -n 
     KWIN_BIN=kwin-localdesktop-gl
 fi
 echo "== KWin: $KWIN_BIN"
-KWIN="$KWIN_BIN --socket wayland-2 --fullscreen=true --xwayland --no-lockscreen --inputmethod /usr/bin/plasma-keyboard"
+KWIN="$KWIN_BIN --socket wayland-2 --fullscreen=true --xwayland --no-lockscreen --inputmethod /usr/local/bin/localdesktop-inputmethod"
 SHELL_CMD=/usr/local/bin/localdesktop-plasma-mobile-shell
 
 # Runs a session command; succeeds if it lasted at least 30 s (i.e. didn't fail at startup).

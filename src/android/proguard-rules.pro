@@ -22,6 +22,7 @@
     public static void start(android.app.Activity);
     public static void background(android.app.Activity);
     public static void showKeyboard(android.app.Activity);
+    public static void hideKeyboard(android.app.Activity);
     public static void stop(android.app.Activity);
     native <methods>;
 }

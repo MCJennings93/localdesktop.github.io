@@ -1436,3 +1436,15 @@ User-tested: Steam lists the Pro Controller alone (no Deck) with the on-screen p
 
 ## RESUME HERE (2026-11-06 ~15:30)
 Controller setup complete for now (user). Everything committed and pushed (see git log). Backlog for controllers: step 3 (Sony as DS4/DualSense on own slots — slot sysfs needs USB parents like DroidDeck's describeSony; others as Xbox), rumble to Android, gyro-as-mouse in a game layout, Bastion A/B without the focus diagnostic (probably fine). Next area: ask the user (ROADMAP order: Steam/games items remain: games at any resolution, clicks-stopped bug, Proton/Windows games).
+
+## 2026-11-13 — Android keyboard in Plasma (branch feat/plasma-android-keyboard, off merge/upstream-20261106; UNCOMMITTED)
+User: earbud/audio output switching stable for a week (done). Battery drain = later. Wants the Android keyboard in the desktop; then Compositor.
+Why it never showed: upstream's PhoneKeyboard opens on a touch of /tmp/localdesktop-keyboard, written only by localdesktop-keyboard-relay (Squeekboard, labwc/Xfce). Plasma's KWin ran plasma-keyboard, so nothing asked.
+Fix:
+- guest/managed/usr/local/src/android-keyboard/localdesktop-android-keyboard.c: a zwp_input_method_v1 client; activate → writes "show", deactivate → "hide" (atomic rename) to /tmp/localdesktop-keyboard. Keys still arrive as key presses (upstream's path; ASCII only). Built by guest/build-android-keyboard.sh (Debian bullseye cross, glibc 2.31; HOST_ARCH=1 for an x86 test build) → managed/usr/local/libexec/.
+- bin/localdesktop-inputmethod (KWin --inputmethod): LOCALDESKTOP_TOUCH_KEYBOARD=0 (setting on) → our IM, else exec plasma-keyboard. Chosen when KWin starts the IM, so a setting change applies on the next session.
+- App: watcher reads the file ("hide" → KeyboardDismissed, re-checked after 150 ms so moving between fields doesn't flicker; anything else → KeyboardRequested). ExternalDisplay.hideKeyboard → TrackpadControls.hideKeyboard / PhoneKeyboard.hide. classes.dex rebuilt (alvrme image).
+- build-overlay.sh: libexec/ files are now 0755 too. Side effect: localdesktop-lsof-divert was 0644 and silently failed at session start and in its pacman hook; now it runs (idempotent).
+Tested on the PC: headless kwin_wayland 6.8.2 (archlinux docker; copy the binary to drop file caps; pacman -Syu) + foot: show/hide on focus, two windows, wrapper both modes (plasma-keyboard starts when off). Script in the scratchpad: imtest2.sh.
+APK: ~/localdesktop-bench/apks/dev-59f0228-androidkbd-1.apk INSTALLED 2026-11-13 (adb needed a kill-server after plugging in). User: "I have the android keyboard!" (show works). User: hides when switching apps.
+Next: install (Play Protect OK on phone), user taps a text field in Plasma (search, Konsole, Brave URL bar) → Android keyboard up, desktop fits above; tap outside → down. Logs: RustStdoutStderr / KWin log for "android-keyboard:". Later: commit_string through the IM for full Unicode (CJK, emoji, accents) and content_type → Android inputType (password/number).

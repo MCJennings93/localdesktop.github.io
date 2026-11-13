@@ -239,6 +239,12 @@ impl ApplicationHandler<AppUserEvent> for PolarBearApp {
                     );
                 }
             }
+            AppUserEvent::KeyboardDismissed => {
+                run_in_jvm(
+                    external_display::hide_keyboard,
+                    self.frontend.android_app.clone(),
+                );
+            }
             AppUserEvent::KeyboardInset => {
                 set_keyboard_inset(backend, external_display::keyboard_inset());
             }
