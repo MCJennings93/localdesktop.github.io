@@ -549,6 +549,11 @@ pub fn handle(event: CentralizedEvent, backend: &mut WaylandBackend, event_loop:
 /// toplevels get it through [`State::set_host_geometry`], in logical units for the scale-aware ones.
 fn resize_desktop(backend: &mut WaylandBackend, window: Size<i32, Physical>) {
     let size: Size<i32, Physical> = (window.w, (window.h - backend.keyboard_inset).max(1)).into();
+    super::frame_stats::window_resized(
+        size.w,
+        size.h,
+        (size.w, size.h) == (backend.compositor.state.size.w, backend.compositor.state.size.h),
+    );
 
     if let Some(output) = &backend.compositor.output {
         output.change_current_state(
@@ -940,6 +945,10 @@ fn render(backend: &mut WaylandBackend) -> Result<(), String> {
                     ))
                 }),
             );
+        }
+        let toplevels = backend.compositor.state.xdg_shell_state.toplevel_surfaces().len();
+        if toplevels > 0 && !elements.iter().any(|e| matches!(e, SurfaceElement::Surface(_))) {
+            super::frame_stats::empty_frame(toplevels);
         }
         let pad = backend.gamepad.elements(renderer, (size.w, size.h));
 

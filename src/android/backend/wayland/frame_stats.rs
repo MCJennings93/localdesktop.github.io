@@ -15,6 +15,10 @@
 //! that is not fullscreen covers only part of the screen. Each such frame is also logged on its
 //! own.
 //!
+//! It also logs `BLACK` KWin frames (nearly every sample under 12 in red, green and blue), `EMPTY`
+//! app frames (drawn with no client surface in them, so only the black clear colour shows) and
+//! resizes of the phone's window that leave its size unchanged, to place a one-frame black flash.
+//!
 //! For the synctest client (/root/synctest: solid frames cycling red, green, blue, slow to draw)
 //! it counts `mixed` frames (more than one of the three colours: partly drawn when read) and
 //! `stale` ones (the same colour as the previous synctest frame: read before the new one landed).
@@ -102,6 +106,7 @@ fn probe_frame(pixels: &[u8], stride: usize, width: i32, height: i32, format: Fo
         return;
     }
     let mut green = 0;
+    let mut black = 0;
     // Green samples below saturation: a video's picture always has some, synctest's solid pure
     // green frames have none.
     let mut shaded_green = 0;
@@ -115,6 +120,9 @@ fn probe_frame(pixels: &[u8], stride: usize, width: i32, height: i32, format: Fo
                 return;
             };
             let (r, g, b) = (pixel[red], pixel[1], pixel[blue]);
+            if r < 12 && g < 12 && b < 12 {
+                black += 1;
+            }
             if r < 16 && b < 16 && g >= 48 {
                 green += 1;
                 if g < 240 {
@@ -132,6 +140,12 @@ fn probe_frame(pixels: &[u8], stride: usize, width: i32, height: i32, format: Fo
     PROBED.fetch_add(1, Ordering::Relaxed);
     let samples = GRID.0 * GRID.1;
     probe_synctest(primaries, samples);
+    if black * 100 >= samples * 95 {
+        log::warn!(
+            "frame-stats: BLACK client frame: {}% of samples ({width}x{height})",
+            black * 100 / samples
+        );
+    }
     if green * 100 >= samples * GREEN_PERCENT && shaded_green > 0 {
         GREEN.fetch_add(1, Ordering::Relaxed);
         let total = GREEN_TOTAL.fetch_add(1, Ordering::Relaxed) + 1;
@@ -327,4 +341,21 @@ pub fn redrawn(render: Duration, swap: Duration) {
         start: Some(now),
         ..Window::default()
     };
+}
+
+/// The app drew a frame with no client surface in it although toplevels exist.
+pub fn empty_frame(toplevels: usize) {
+    if enabled() {
+        log::warn!("frame-stats: EMPTY app frame ({toplevels} toplevels, none drawn)");
+    }
+}
+
+/// The phone's window was resized; `same` when the size didn't change.
+pub fn window_resized(width: i32, height: i32, same: bool) {
+    if enabled() {
+        log::warn!(
+            "frame-stats: window resize to {width}x{height}{}",
+            if same { " (same size)" } else { "" }
+        );
+    }
 }
