@@ -10,8 +10,9 @@ reference throughout.
 |---|---|---|
 | `localdesktop-gamemode` | guest/managed/usr/local/bin | Starts gamescope with `localdesktop-steam --gamemode`, or brings a running Game Mode forward. Writes gamescope's pid to `/run/localdesktop-pad/gamemode` (the process is named `gamescope-wl`, so `pgrep -x gamescope` does not find it). |
 | `localdesktop-steam --gamemode` | same | Steam with `-gamepadui -steamdeck -steamos3`; `--shutdown`, `--restart`, `--desktop` for the other cases. |
+| `localdesktop-steam-compat` | same | Run by `localdesktop-steam` before each client start: maps every Linux game without an arm64 build to "Linux x86 (FEX)" (`localdesktop-fex`) in config.vdf, keeping any tool the user picked. Tests: `guest/tools/steam-compat-test.py`. |
 | `steamos-session-select` | same | What the Deck UI runs for "Switch to Desktop": shuts Steam down, so gamescope ends. Untested. |
-| gamescope 3.16.29 | guest/pkgbuilds/gamescope, shipped as a package in guest/blobs/packages | Arch's packaging, DroidDeck's 19 patches, and ours (0123: Steam's own screen follows the window; 0200: a nested backend needs no DRM primary node). |
+| gamescope 3.16.29 | guest/pkgbuilds/gamescope, shipped as a package in guest/blobs/packages | Arch's packaging, DroidDeck's 19 patches, and ours (0123: Steam's own screen follows the window; 0124: a game at the native size follows it too; 0200: a nested backend needs no DRM primary node). |
 | Turnip render-node patch | patches/mesa/0001, guest/build-turnip.sh | Turnip on KGSL reports the bound `/dev/dri/renderD0` through `VK_EXT_physical_device_drm`. |
 
 ## Why each part is there
@@ -35,6 +36,20 @@ reference throughout.
   Steam repeats the request and then crashes. Requests for the game servers are applied as before.
   No size is fixed anywhere: "Native" is whatever screen Game Mode is on (inner or cover screen,
   any rotation, an external display).
+- **Games follow rotation.** gamescope updates only Steam's X server when the window changes, so
+  a game started at the native size stayed at the old size after a rotation or fold (letterboxed
+  or cropped). Patch 0124, turned on with `GAMESCOPE_NATIVE_GAMES_FOLLOW_OUTPUT=1`, resizes each
+  game server whose size equals the old window to the new one; a game Steam gave its own size
+  (Bastion's 1920x1080) keeps it. The rule is in `src/Utils/NativeGameFollow.h`, tested by
+  `tests/test_native_game_follow.cpp`.
+- **x86 Linux games.** The arm64 client runs them through Valve's FEX tool, which needs a guest
+  rootfs (`/usr/share/guestos/fex-mesa`) Local Desktop doesn't have, so they didn't start (Golf
+  With Your Friends). Our "Linux x86 (FEX)" tool has its own rootfs (the Steam Linux Runtime, with
+  GL and Vulkan thunks). `localdesktop-steam-compat` makes it the default for each x86-only Linux
+  game Steam knows (from `appcache/appinfo.vdf`), as a per-app mapping. A game mapped to another
+  tool keeps it, and a game the user unmapped stays unmapped. The client rewrites config.vdf when
+  it exits, so the mapping is written only before it starts; a game bought while Steam runs is
+  mapped at the next start.
 - **Game resolution.** Games default to Steam's global "Native", the full screen. A game that
   only draws at 16:9 keeps a per-game Game Resolution of 1920x1080 (see below).
 - **Touch.** gamescope's `--default-touch-mode 4` (passthrough) is for the Steam UI; Steam sets the

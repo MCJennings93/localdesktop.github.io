@@ -17,7 +17,7 @@ upstream plus this fork's work. New work goes on a short-lived branch and merges
 
 What works: Plasma Mobile with KWin GPU compositing and zero-copy dmabuf import, at ~100 fps; Brave
 and Firefox on the GPU; Steam in Game Mode (gamescope nested in KWin, Steam Deck UI), with a
-progress notification while Steam starts or updates; Bastion (x86, FEX); the emulated Steam Deck
+progress notification while Steam starts or updates; Bastion and Golf With Your Friends (x86, FEX); the emulated Steam Deck
 controller in Steam's UI; Brave as the default browser (Firefox if Brave isn't installed); Chinese,
 Japanese and Korean text, with the right glyphs per language (Noto CJK). The Android keyboard types into the desktop: a text field taking focus opens it, with the
 desktop fitting above it, and it goes away when the field loses focus (Plasma's own keyboard instead when the
@@ -37,6 +37,8 @@ Done:
 - A foreground service with a notification ("Close desktop") keeps the app and its guest processes
   alive; swiping the app from recents ends the session.
 - Audio keeps running while hidden, and the AAudio sink reopens its stream when the output changes.
+  A sink whose first open fails keeps running and retries, and when any part of the sound stack
+  exits, the app restarts all of it (1 s, doubling to 30 s; reset after a minute up).
 - Clients keep drawing while the window is hidden, at about 10 fps. An es2gears client went from 93
   to 8.4 fps, and the app from 103% to 19% of a core (`ld-hiddenrate`), then back to 118 fps on return.
 - A session that dies is noticed, hidden or visible, even if guest programs survive it: leftovers are
@@ -94,13 +96,17 @@ Open:
 2. **Games at any resolution and aspect ratio.** Done: Steam's own screen and its "Native" game
    resolution follow the real screen (gamescope patch 0123), so games default to the full screen
    on any phone, posture or external display. Games that only draw at 16:9 (Bastion) keep a
-   per-game 1920x1080, where touch is exact ([Game Mode](docs/game-mode.md)). Not yet tried on
-   an external display.
-3. **Clicks stopped in one Game Mode instance.** The cursor moved but no button events arrived.
+   per-game 1920x1080, where touch is exact ([Game Mode](docs/game-mode.md)). A game at the
+   native size follows rotation and folding (patch 0124; to be confirmed on the phone). Not yet
+   tried on an external display.
+3. **x86 Linux games default to our FEX tool** (`localdesktop-steam-compat`), keeping the user's
+   pick. Golf With Your Friends runs full screen with touch and sound; it sometimes crashes in Unity
+   (SIGSEGV at 0x29c), not yet symbolized.
+4. **Clicks stopped in one Game Mode instance.** The cursor moved but no button events arrived.
    Seen once. Guess: stale pointer focus after a game changed resolution. Trace recipe in the notes.
-4. **Proton ARM64 and Windows games.** DroidDeck's recipes cover this: VKD3D/DXVK defaults, SysV
+5. **Proton ARM64 and Windows games.** DroidDeck's recipes cover this: VKD3D/DXVK defaults, SysV
    IPC shim, tracer hiding, the pressure-vessel probe shim.
-5. Smaller items:
+6. Smaller items:
    - "Switch to Desktop" is untested.
    - Steam's menu can't be reached by touch.
    - Plasma Mobile may not show .desktop Actions (Restart Steam).
