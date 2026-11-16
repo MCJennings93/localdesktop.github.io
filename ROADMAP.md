@@ -91,11 +91,11 @@ Open:
      controller); still to try: gyro as mouse in a game's layout.
    - **On-screen gamepad** (off by default). It stops drawing while still taking touches, its STEAM
      button doesn't open Steam's menu or the Quick Access Menu, and touching it flashes the screen.
-2. **Games at any resolution and aspect ratio.** On screens larger than 1920x1080, Steam's own
-   screen is still cut to a clamped 1920x1080 request (requester unknown, see
-   [Game Mode](docs/game-mode.md)). Games that letterbox themselves (Bastion at
-   non-16:9 sizes) misplace touch by their own bars. Options: per-game Game Resolution, windowed
-   mode inside gamescope, a newer FNA.
+2. **Games at any resolution and aspect ratio.** Done: Steam's own screen and its "Native" game
+   resolution follow the real screen (gamescope patch 0123), so games default to the full screen
+   on any phone, posture or external display. Games that only draw at 16:9 (Bastion) keep a
+   per-game 1920x1080, where touch is exact ([Game Mode](docs/game-mode.md)). Not yet tried on
+   an external display.
 3. **Clicks stopped in one Game Mode instance.** The cursor moved but no button events arrived.
    Seen once. Guess: stale pointer focus after a game changed resolution. Trace recipe in the notes.
 4. **Proton ARM64 and Windows games.** DroidDeck's recipes cover this: VKD3D/DXVK defaults, SysV

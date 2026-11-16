@@ -1448,3 +1448,61 @@ Fix:
 Tested on the PC: headless kwin_wayland 6.8.2 (archlinux docker; copy the binary to drop file caps; pacman -Syu) + foot: show/hide on focus, two windows, wrapper both modes (plasma-keyboard starts when off). Script in the scratchpad: imtest2.sh.
 APK: ~/localdesktop-bench/apks/dev-59f0228-androidkbd-1.apk INSTALLED 2026-11-13 (adb needed a kill-server after plugging in). User: "I have the android keyboard!" (show works). User: hides when switching apps.
 Next: install (Play Protect OK on phone), user taps a text field in Plasma (search, Konsole, Brave URL bar) → Android keyboard up, desktop fits above; tap outside → down. Logs: RustStdoutStderr / KWin log for "android-keyboard:". Later: commit_string through the IM for full Unicode (CJK, emoji, accents) and content_type → Android inputType (password/number).
+
+## 2026-11-13 — Compositor: shade jank, first manual runs
+Pushed main to fork through 9930354 (upstream merge + Android keyboard); GitHub = phone build dev-59f0228-androidkbd-1.
+Shade test is manual (no `cmd statusbar expand-settings`, per the no-screen-capture rule): ~/bin/ld-shadejank-manual <label> [s] (BROWSER=brave plays YouTube fullscreen first). Results in ~/localdesktop-bench/shadejank-manual-*.
+- floor (Nova launcher, no Local Desktop): 2228 frames, 12.2% janky, p90 19 / p99 57 ms, app CPU 13%.
+- Local Desktop + Brave video: 1800 frames, 19.7% janky, p90 25 / p99 65 ms, app CPU 183%.
+CAVEAT: GO/STOP only print when the command ends, so the user never saw them; pull timing unknown. Next run: cue on the phone (notification "Pull now"/"Stop"), repeat both. User: "some glitching ... pretty minimal. Worth optimizing, but usable as-is." Asked what/where the glitches were (shade stutter vs desktop/video flashes).
+### Black flash while pulling the shade (2026-11-13 ~14:25)
+User: over Local Desktop + Brave video, the screen "went black for maybe one frame" while moving the shade, "many times"; unsure if whole screen or only Local Desktop. Usable as-is, worth optimizing.
+Diagnostics (UNCOMMITTED, APK dev-9930354-blackprobe-1 installed, files/frame-stats ON): frame_stats logs BLACK client frames (>=95% of grid <12), EMPTY app frames (toplevels but no surface element), window resizes (same-size flagged).
+Result of ~10 pulls: 0 resizes, 0 BLACK of ~2800 probed KWin frames, 0 EMPTY, 0 green; app redraws 45-77/s, render max <5 ms, swap max <7 ms. Only app event per pull: window focus lost/regained. So the black isn't in KWin's frames or our drawing. Suspect Android composition (One UI shade blur/dim sampling our layer). Layer not secure (isSecure=false, flags 0x2102).
+Asked user: flash over the home screen too? Flash with Accessibility > Visibility enhancements > Reduce transparency and blur ON?
+Side finding: resize_desktop runs fully on same-size resizes (2 per shade cycle in run 1, at focus regain), and configure_toplevel always send_configure()s: needless configures to KWin. Not the flash cause, but worth an early return when size+scale are unchanged.
+PARKED (user, 2026-11-13): black flash while pulling the shade. frame-stats turned off on the phone (rm files/frame-stats); diagnostic code stays in the tree, UNCOMMITTED (inert without the file). Unanswered checks for when it's picked up again: flash over the home screen? gone with "Reduce transparency and blur"? Then SurfaceFlinger --latency around pulls. Next (user): games loading on the full native screen.
+
+## 2026-11-13 — Games on the full native screen (user's next item)
+Findings (gamescope 3.16.29 source + Steam logs, no phone changes):
+- Only Steam changes xwayland modes besides real output changes: GAMESCOPE_XWAYLAND_MODE_CONTROL (steamcompmgr.cpp ~7205; clamped to the output when allowSuperRes=0).
+- Steam's systemdisplaymanager.txt on every start: output 2176x1811 seen, then "SetGameResolutionGlobal: Native" and at once 1920x1080 (server #0 and #1). "GetGameResolutionOverride: 1920x1080" lines are Bastion's per-game ResolutionOverride2 (user's touch fix; leave).
+- Wayland backend: GetScreenType INTERNAL (so no mode list atom), fake EDID = GenerateSimpleEdid(g_nNestedWidth/Height) made once at connector init = 1280x720 (default nested size, before the window has a size), never updated; and GAMESCOPE_PATCHED_EDID_FILE is unset, so no EDID is written at all ("Wrote new edid" never in the log). Base EDID: one detailed 800x1280 timing, no standard timings.
+- Steam UI (steamui/sp.js): setting gamescope_game_resolution_global; options "Native (WxH)", "Default", more.
+Asked user to read Steam Settings > Display > Game Resolution (Native's WxH, list, any maximum) unfolded. If Native=1920x1080 → gamescope patch: real EDID following output size (write file + update on resize/fold). If a max cap → Steam setting.
+### REGRESSION seen 2026-11-13 15:18: Game Mode doesn't follow rotation
+User: "Steam's worse now. It no longer adjusts window size when rotating, and it also isn't full native screensize." (First Game Mode run since Nov 6 15:19; installed build dev-9930354-blackprobe-1, i.e. upstream merge + keyboard + diagnostics.)
+- Started upright: 1811x2176, then Steam's 1920x1080 clamped to 1811x1080. Rotated sideways: KWin's screen WL-0 became 829x690 but the fullscreen gamescope window stayed 690x829; gamescope logged no mode change.
+- Toggling fullScreen off/on via a KWin script → gamescope at once 2176x1811 (then Steam 1920x1080). So gamescope handles configures; KWin didn't refit the fullscreen window on rotation.
+- Our IM was not active during Game Mode (show/hide pair came before Steam started).
+- resize_desktop in the merge does the same as the old Resized branch (plus keyboard inset 0). Window now reports 2176x1812 (was 2176x1811 on Nov 6: check why).
+- KWin geometry script: /tmp/ld-geo.js in the guest (prints "LDGEO" lines to /tmp/plasma-mobile-session.log; needs plasmashell's DBUS_SESSION_BUS_ADDRESS).
+### Fix built: Steam's screen follows the window (2026-11-13 ~15:40, UNCOMMITTED)
+User read Steam Settings > Display > Game Resolution: "Native shows 1811x1080. If I rotate horizontal, native changes to 1920x1080." So Steam's Native = its own (already cut) screen; Steam shrinks server #0 via MODE_CONTROL to 1920x1080 (gamescope clamps). DroidDeck saw the same and drops those writes with an LD_PRELOAD in Steam (tools/linuxfs/preload/xmode.c, BL_FOLLOW_OUTPUT).
+- gamescope patch 0123-nested-steam-screen-follows-window.patch: with GAMESCOPE_STEAM_SCREEN_FOLLOWS_WINDOW=1 and >1 Xwayland, MODE_CONTROL for server #0 is ignored (logs "Keeping xwayland server #0 at the output's size ..."); game servers unchanged. pkgrel=2, built on the phone (guest/pkgbuilds/build.sh now uses LD_PKG, default io.github.localdesktop), shipped as guest/blobs/packages/gamescope-3.16.29-2 (-1 removed).
+- localdesktop-gamemode exports the variable.
+- APK ~/localdesktop-bench/apks/dev-9930354-steamscreen-1.apk installed (also still carries the uncommitted black-flash diagnostics, inert).
+- Rotation not followed once (15:18 run), followed on the next rotation: intermittent, KWin didn't refit the fullscreen window; watch for it.
+- BUG (backlog): app start hung once in ArchProcess::is_supported: forked child stuck in futex_wait_queue_me, 1 thread, never exec'd proot (fork in a multithreaded process). force-stop + start fixed it.
+Test asked: Steam fills unfolded, Native = full size, rotation follows, a non-Bastion game full screen, Bastion stays 1920x1080.
+
+## RESUME HERE (2026-11-13 end of session)
+Pushed: main = fork/main = 9930354 (upstream merge + Android keyboard in Plasma). Everything below is UNCOMMITTED in ~/localdesktop (ask before committing; when committing, sync docs/dev-notes.md with the serial replaced and update ROADMAP).
+Installed on the phone: dev-9930354-steamscreen-1 (~/localdesktop-bench/apks/), gamescope 3.16.29-2 in the guest.
+Uncommitted changes:
+1. Steam's screen follows the window: guest/pkgbuilds/gamescope/0123-nested-steam-screen-follows-window.patch + PKGBUILD (pkgrel 2, source, b2sums), guest/blobs/packages/gamescope-3.16.29-2 (replaces -1, git rm'd), localdesktop-gamemode exports GAMESCOPE_STEAM_SCREEN_FOLLOWS_WINDOW=1, guest/pkgbuilds/build.sh uses LD_PKG (default io.github.localdesktop). NOT TESTED by the user yet.
+2. Black-flash diagnostics in frame_stats.rs / event_handler.rs (BLACK/EMPTY/same-size resize logs, only with files/frame-stats; frame-stats is OFF on the phone). Parked: keep as a separate commit, or drop.
+First thing next session: ask the user to test Game Mode unfolded (see the test list in "Fix built" above): Steam fills the screen, Settings > Display > Game Resolution "Native" = full size, rotation follows, a non-Bastion game full screen, Bastion still 1920x1080. Check /tmp/gamemode.log for "Keeping xwayland server #0". If good: commit (1) and the doc update in docs/game-mode.md ("Not working yet" first bullet), ROADMAP Steam/games item 2.
+Backlog from today: shade black flash (parked, checks listed); shade jank 12.2% floor vs 19.7% with Brave (cue problem: GO/STOP not visible, use an on-phone notification next time); same-size resize_desktop sends needless configures to KWin (early return when size+scale unchanged); intermittent KWin not refitting fullscreen gamescope on rotation; app start hang in is_supported (forked child on a futex); Android keyboard non-ASCII text via commit_string; battery drain (user: later).
+
+## 2026-11-16 — Why the Steam-screen fix didn't show: gamescope flip-flopped
+User's first test (Nov 16 10:25): still 1920x1080 / 1811x1080, "a lot of black bezel". Guest had gamescope 3.16.29-1: /usr/local/share/localdesktop/packages had BOTH -1 (left from the old APK; the overlay never deletes dropped files) and -2, and localdesktop-packages installed every file whose version differed, so each start flipped (pacman.log: -1→-2 Nov 14, →-1 Nov 15, →-2 Nov 16 06:17, →-1 10:21).
+Fix (UNCOMMITTED): localdesktop-packages keeps only the newest file per package (vercmp), deletes older ones, installs it if not installed. Dry run on the phone OK. APK dev-9930354-pkgnewest-1 installed; two app restarts → gamescope 3.16.29-2 both times, 1 file left. User retest of Game Mode pending.
+### 2026-11-16 ~11:05 — Steam SIGSEGV with patch 0123 → fixed by acknowledging (pkgrel 3)
+With gamescope -2 actually running (10:55 run): "Keeping xwayland server #0 ... (Steam asked for 1920x1080)" x4, then Steam segfaulted (steam-run.log: "Segmentation fault ... steam exited rc=139", ~23 s after start, right after login and its UI swapchain; no minidump). First non-zero Steam exit in the whole log (all earlier rc=0).
+Cause: gamescope acknowledges a MODE_CONTROL request by deleting the property (after the root resize in the ConfigureNotify handler, or at once when no change is needed). -2 ignored the request but left the property, so Steam saw it pending, repeated it, and crashed. -3 deletes the property when it ignores a request (same as the no-change path). Built on the phone, shipped as guest/blobs/packages/gamescope-3.16.29-3 (-2 removed). APK dev-9930354-steamack-1 installed; guest has only -3. Note: an older APK would now DOWNGRADE gamescope (the installer installs exactly the newest shipped file).
+User retest pending.
+### 2026-11-16 ~11:35 — Steam full native WORKS; Bastion decided
+User: "it's using the full native screen now!" (gamescope -3, no crash). Logs: "Keeping xwayland server #0 at the output's size 1811x2176 / 2176x1811 (Steam asked for 1920x1080)": dynamic, follows rotation.
+Bastion decompiled (ILSpy in docker mcr.microsoft.com/dotnet/sdk:8.0, ilspycmd 8.2.0.7535 + DOTNET_ROLL_FORWARD=Major; output in the scratchpad): App.setLetterBoxViewports = full width, height w*9/16, centred; MouseHandler uses Mouse.GetState raw (FNA only scales window→backbuffer, no offset). So Bastion is right only at exact 16:9.
+User decision: "If the game restricts to only 16:9 like Bastion, do nothing. If the game allows for it, default to the full native resolution available." → global Native (now full size) + Bastion keeps ResolutionOverride2 1920x1080. No new work. docs/game-mode.md + ROADMAP updated (uncommitted). Asked: commit both (fix; diagnostics) and push?

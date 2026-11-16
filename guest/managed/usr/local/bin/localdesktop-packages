@@ -4,14 +4,32 @@
 # and the libraries it needs that the base guest lacks. Run at session start.
 # Our gamescope carries patches, so it is kept out of pacman -Syu (IgnorePkg); Arch's would replace it.
 DIR=/usr/local/share/localdesktop/packages
-want=
+# App updates add files here but never remove the ones a newer APK dropped, so a package can have
+# several. Only the newest of each (pacman's vercmp) counts; older files are deleted, or each start
+# would install the other one (gamescope flipped between 3.16.29-1 and -2 on every start).
+list=$(mktemp)
 for f in "$DIR"/*.pkg.tar.*; do
     [ -f "$f" ] || continue
     info=$(bsdtar -xOf "$f" .PKGINFO) || continue
     name=$(printf '%s\n' "$info" | sed -n 's/^pkgname = //p')
     version=$(printf '%s\n' "$info" | sed -n 's/^pkgver = //p')
-    [ "$(pacman -Q "$name" 2>/dev/null | cut -d' ' -f2)" = "$version" ] || want="$want $f"
+    printf '%s %s %s\n' "$name" "$version" "$f" >> "$list"
 done
+want=
+for name in $(cut -d' ' -f1 "$list" | sort -u); do
+    newest= newest_file=
+    while read -r n version f; do
+        [ "$n" = "$name" ] || continue
+        if [ -z "$newest" ] || [ "$(vercmp "$version" "$newest")" -gt 0 ]; then
+            [ -n "$newest_file" ] && rm -f "$newest_file"
+            newest=$version newest_file=$f
+        else
+            rm -f "$f"
+        fi
+    done < "$list"
+    [ "$(pacman -Q "$name" 2>/dev/null | cut -d' ' -f2)" = "$newest" ] || want="$want $newest_file"
+done
+rm -f "$list"
 if [ -n "$want" ]; then
     echo "localdesktop-packages: installing$want"
     # shellcheck disable=SC2086

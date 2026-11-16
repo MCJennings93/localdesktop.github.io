@@ -90,6 +90,10 @@ progress $$ </dev/null &
 localdesktop-steam --shutdown
 # The app shows its on-screen gamepad while this pid (gamescope, after exec) is alive.
 mkdir -p /run/localdesktop-pad && echo $$ > "$FLAG"
+# Steam's own screen (X server #0) stays the window's size: Steam asks to shrink it to 1920x1080 on a
+# larger screen, and its "Native" game resolution reads that size back. Games still get the size Steam
+# picks for each (patch 0123 in guest/pkgbuilds/gamescope).
+export GAMESCOPE_STEAM_SCREEN_FOLLOWS_WINDOW=1
 exec gamescope --backend wayland --expose-wayland -f -e \
     --xwayland-count 2 \
     --default-touch-mode 4 \

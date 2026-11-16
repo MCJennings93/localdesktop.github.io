@@ -1,0 +1,49 @@
+diff --git a/src/steamcompmgr.cpp b/src/steamcompmgr.cpp
+index 5fb9086..b1de060 100644
+--- a/src/steamcompmgr.cpp
++++ b/src/steamcompmgr.cpp
+@@ -6908,6 +6908,34 @@ static inline float santitize_float( float f )
+ #endif
+ }
+ 
++// With GAMESCOPE_STEAM_SCREEN_FOLLOWS_WINDOW=1 and more than one Xwayland server, the Steam client's
++// server (#0) keeps the output's size: its requests to resize it are ignored. Games run on the other
++// servers, whose sizes Steam still sets per game (Game Resolution). Without this, the client shrinks
++// its own screen to 1920x1080 (clamped to the output) on a larger output, and its "Native" game
++// resolution, which reads that screen's size back, shrinks with it. An ignored request is answered as
++// one that needs no change: the property is deleted, which is how gamescope says a request is done.
++// Left in place, the client repeats it and then crashes (SIGSEGV seconds after starting).
++static bool SteamScreenFollowsWindow( size_t server_idx, int width, int height )
++{
++	static const bool s_bFollow = []
++	{
++		const char *pszFollow = getenv( "GAMESCOPE_STEAM_SCREEN_FOLLOWS_WINDOW" );
++		return pszFollow && atoi( pszFollow ) != 0;
++	}();
++	if ( !s_bFollow || server_idx != 0 || g_nXWaylandCount < 2 )
++		return false;
++	xwm_log.infof( "Keeping xwayland server #0 at the output's size %dx%d (Steam asked for %dx%d)",
++		g_nOutputWidth, g_nOutputHeight, width, height );
++	gamescope_xwayland_server_t *root_server = wlserver_get_xwayland_server( 0 );
++	if ( root_server )
++	{
++		xwayland_ctx_t *root_ctx = root_server->ctx.get();
++		XDeleteProperty( root_ctx->dpy, root_ctx->root, root_ctx->atoms.gamescopeXWaylandModeControl );
++		XFlush( root_ctx->dpy );
++	}
++	return true;
++}
++
+ static void
+ handle_property_notify(xwayland_ctx_t *ctx, XPropertyEvent *ev)
+ {
+@@ -7274,7 +7302,8 @@ handle_property_notify(xwayland_ctx_t *ctx, XPropertyEvent *ev)
+ 	{
+ 		std::vector< uint32_t > xwayland_mode_ctl;
+ 		bool hasModeCtrl = get_prop( ctx, ctx->root, ctx->atoms.gamescopeXWaylandModeControl, xwayland_mode_ctl );
+-		if ( hasModeCtrl && xwayland_mode_ctl.size() == 4 )
++		if ( hasModeCtrl && xwayland_mode_ctl.size() == 4 &&
++			 !SteamScreenFollowsWindow( size_t{ xwayland_mode_ctl[ 0 ] }, xwayland_mode_ctl[ 1 ], xwayland_mode_ctl[ 2 ] ) )
+ 		{
+ 			size_t server_idx = size_t{ xwayland_mode_ctl[ 0 ] };
+ 			int width = xwayland_mode_ctl[ 1 ];

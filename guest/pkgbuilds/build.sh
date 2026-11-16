@@ -6,12 +6,13 @@
 # Usage: build.sh <name> [glib2-devel package file]
 set -eu
 NAME=$1; GLIBDEV=${2:-}
+PKG=${LD_PKG:-io.github.localdesktop}
 HERE=$(cd "$(dirname "$0")" && pwd)
 STAGE=/root/build/$NAME
-adb shell "run-as app.polarbear sh -c 'rm -rf files/arch$STAGE && mkdir -p files/arch$STAGE'"
+adb shell "run-as $PKG sh -c 'rm -rf files/arch$STAGE && mkdir -p files/arch$STAGE'"
 for f in "$HERE/$NAME"/* $GLIBDEV; do
     adb push -q "$f" /data/local/tmp/ld-build-file
-    adb shell "chmod a+r /data/local/tmp/ld-build-file; run-as app.polarbear sh -c 'cp /data/local/tmp/ld-build-file files/arch$STAGE/$(basename "$f")'"
+    adb shell "chmod a+r /data/local/tmp/ld-build-file; run-as $PKG sh -c 'cp /data/local/tmp/ld-build-file files/arch$STAGE/$(basename "$f")'"
 done
 adb shell rm -f /data/local/tmp/ld-build-file
 # The makepkg copy lives only in the build folder and is deleted when the build ends, whatever the
