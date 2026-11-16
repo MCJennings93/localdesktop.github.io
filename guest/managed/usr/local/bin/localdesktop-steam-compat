@@ -1,0 +1,319 @@
+#!/usr/bin/python3
+"""Makes "Linux x86 (FEX)" (localdesktop-fex) the compatibility tool of every x86-only Linux game.
+
+The arm64 Steam client runs an x86 Linux game through Valve's own FEX tool, which needs a guest
+rootfs Local Desktop doesn't have, so the game doesn't start. Before each client start,
+localdesktop-steam runs this tool. It reads the games the client knows (appcache/appinfo.vdf) and
+gives each Linux game without an arm64 build a per-app mapping to localdesktop-fex in
+config/config.vdf, as picking it in the game's Compatibility settings does.
+
+A tool the user picked stays: a game mapped to anything else is left alone, and so is a game the
+user unmapped after this tool mapped it (the games it has mapped are kept in
+~/.local/share/localdesktop-fex/mapped.json). A game this tool mapped that later gets an arm64
+build is unmapped again.
+
+The client rewrites config.vdf when it exits, so the mapping is only written while it isn't running.
+The VDF and appinfo readers follow DroidDeck's steam-compatibility (GPL-3.0).
+
+    localdesktop-steam-compat [--dry-run]
+"""
+import json
+import os
+import re
+import struct
+import subprocess
+import sys
+
+TOOL = "localdesktop-fex"
+PLAYABLE = frozenset(("game", "demo", "beta"))
+HOME = os.environ.get("HOME", "/root")
+STEAM = os.path.join(os.environ.get("XDG_DATA_HOME", os.path.join(HOME, ".local", "share")), "Steam")
+STATE = os.path.join(HOME, ".local", "share", "localdesktop-fex", "mapped.json")
+TOKEN = re.compile(r'\s*(?:"((?:[^"\\]|\\.)*)"|([{}])|//[^\n]*)')
+
+
+def tokenize(text):
+    tokens, pos = [], 0
+    while pos < len(text):
+        m = TOKEN.match(text, pos)
+        if not m or m.end() == pos:
+            break
+        pos = m.end()
+        if m.group(2):
+            tokens.append(m.group(2))
+        elif m.group(1) is not None:
+            tokens.append('"' + m.group(1) + '"')
+    return tokens
+
+
+def balanced(tokens):
+    depth = 0
+    for token in tokens:
+        depth += token == "{"
+        depth -= token == "}"
+        if depth < 0:
+            return False
+    return depth == 0
+
+
+def find_block(tokens, path, start=0):
+    """Index of the "{" opening the block at `path` (keys compared without case) below `start`."""
+    depth, want, i = 0, 0, start
+    while i < len(tokens):
+        t = tokens[i]
+        if t == "{":
+            depth += 1
+        elif t == "}":
+            depth -= 1
+            if depth < want:
+                return None
+        elif depth == want and i + 1 < len(tokens) and tokens[i + 1] == "{":
+            if t.lower() == '"%s"' % path[want].lower():
+                if want == len(path) - 1:
+                    return i + 1
+                want += 1
+                i += 1
+                depth += 1
+        i += 1
+    return None
+
+
+def block_end(tokens, start):
+    depth = 0
+    for i in range(start, len(tokens)):
+        if tokens[i] == "{":
+            depth += 1
+        elif tokens[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+    return len(tokens)
+
+
+def serialize(tokens):
+    out, depth, i = [], 0, 0
+    while i < len(tokens):
+        t = tokens[i]
+        if t == "}":
+            depth -= 1
+            out.append("\t" * depth + "}")
+            i += 1
+        elif i + 1 < len(tokens) and tokens[i + 1] == "{":
+            out += ["\t" * depth + t, "\t" * depth + "{"]
+            depth += 1
+            i += 2
+        else:
+            out.append("\t" * depth + t + "\t\t" + tokens[i + 1])
+            i += 2
+    return "\n".join(out) + "\n"
+
+
+def mapping_block(tokens):
+    """Index of CompatToolMapping's "{", added when missing; None if config.vdf has no Steam section."""
+    steam = find_block(tokens, ["InstallConfigStore", "Software", "Valve", "Steam"])
+    if steam is None:
+        return None
+    mapping = find_block(tokens, ["CompatToolMapping"], steam + 1)
+    if mapping is None:
+        end = block_end(tokens, steam)
+        tokens[end:end] = ['"CompatToolMapping"', "{", "}"]
+        return end + 1
+    return mapping
+
+
+def entries(tokens, mapping):
+    """{app id: (index of its "{", tool name)} for each block in CompatToolMapping."""
+    found, end, i = {}, block_end(tokens, mapping), mapping + 1
+    while i < end:
+        if i + 1 < end and tokens[i + 1] == "{":
+            close = block_end(tokens, i + 1)
+            name = ""
+            for j in range(i + 2, close - 1):
+                if tokens[j].lower() == '"name"':
+                    name = tokens[j + 1].strip('"')
+                    break
+            found[tokens[i].strip('"')] = (i + 1, name)
+            i = close + 1
+        else:
+            i += 2
+    return found
+
+
+def read_appinfo(path):
+    """{app id: (oslist, osarch, type)} from the client's appinfo.vdf (versions 27, 28 and 29)."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return {}
+    if len(data) < 8:
+        return {}
+    magic = struct.unpack_from("<I", data, 0)[0]
+    if magic not in (0x07564427, 0x07564428, 0x07564429):
+        return {}
+    offset, strings = 8, None
+    if magic == 0x07564429:
+        table = struct.unpack_from("<q", data, offset)[0]
+        offset += 8
+        count = struct.unpack_from("<I", data, table)[0]
+        position, strings = table + 4, []
+        for _ in range(count):
+            end = data.index(b"\0", position)
+            strings.append(data[position:end].decode("utf-8", "replace"))
+            position = end + 1
+    header = 4 + 4 + 8 + 20 + 4 + (20 if magic >= 0x07564428 else 0)
+
+    def section(position):
+        result = {}
+        while True:
+            kind = data[position]
+            position += 1
+            if kind == 8:
+                return result, position
+            if strings is not None:
+                key = strings[struct.unpack_from("<I", data, position)[0]]
+                position += 4
+            else:
+                end = data.index(b"\0", position)
+                key = data[position:end].decode("utf-8", "replace")
+                position = end + 1
+            if kind == 0:
+                result[key], position = section(position)
+            elif kind == 1:
+                end = data.index(b"\0", position)
+                result[key] = data[position:end].decode("utf-8", "replace")
+                position = end + 1
+            elif kind == 2:
+                result[key] = struct.unpack_from("<i", data, position)[0]
+                position += 4
+            elif kind == 7:
+                result[key] = struct.unpack_from("<Q", data, position)[0]
+                position += 8
+            else:
+                raise ValueError("unknown appinfo field type %d" % kind)
+
+    found = {}
+    while offset + 8 <= len(data):
+        app, size = struct.unpack_from("<II", data, offset)
+        if app == 0:
+            break
+        start, offset = offset + 8, offset + 8 + size
+        try:
+            info = section(start + header)[0].get("appinfo", {})
+        except (ValueError, IndexError, struct.error):
+            continue
+        common = info.get("common") if isinstance(info, dict) else None
+        if not isinstance(common, dict):
+            continue
+        oslist = frozenset(p.strip().lower() for p in str(common.get("oslist", "")).split(",") if p.strip())
+        found[str(app)] = (oslist, str(common.get("osarch", "")).lower(), str(common.get("type", "")).lower())
+    return found
+
+
+def needs_fex(oslist, osarch, kind):
+    """A Linux game without an arm64 build."""
+    return kind in PLAYABLE and "linux" in oslist and "arm64" not in osarch and "aarch64" not in osarch
+
+
+def plan(current, games, mapped):
+    """What to change: {app id: TOOL, or None to unmap}, and the games this tool has mapped after it.
+
+    current: {app id: tool name} from CompatToolMapping. games: the app ids that need FEX.
+    mapped: the games this tool mapped before (or found mapped to TOOL)."""
+    changes, after = {}, set()
+    for app in games:
+        name = current.get(app, "")
+        if name == TOOL:
+            after.add(app)
+        elif name:
+            continue  # the user's pick
+        elif app in mapped:
+            after.add(app)  # the user unmapped it: still ours to remember, not to map again
+        else:
+            changes[app] = TOOL
+            after.add(app)
+    for app in mapped:
+        if app not in games and current.get(app) == TOOL:
+            changes[app] = None  # it has an arm64 build now
+    return changes, after
+
+
+def apply(tokens, mapping, changes):
+    """Sets or removes the per-app mappings in `changes` (from the last block up, so indices hold)."""
+    found = entries(tokens, mapping)
+    removals = sorted((found[app][0] for app, tool in changes.items() if tool is None and app in found), reverse=True)
+    for block in removals:
+        del tokens[block - 1:block_end(tokens, block) + 1]
+    for app in sorted((a for a, tool in changes.items() if tool), key=lambda a: int(a) if a.isdigit() else 0):
+        block = entries(tokens, mapping).get(app)
+        if block is None:
+            tokens[mapping + 1:mapping + 1] = [
+                '"%s"' % app, "{", '"name"', '"%s"' % TOOL, '"config"', '""', '"priority"', '"250"', "}"]
+            continue
+        start, end = block[0], block_end(tokens, block[0])
+        for i in range(start + 1, end):
+            if tokens[i].lower() == '"name"':
+                tokens[i + 1] = '"%s"' % TOOL
+                break
+        else:
+            tokens[start + 1:start + 1] = ['"name"', '"%s"' % TOOL]
+
+
+def write(path, text):
+    tmp = path + ".localdesktop"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def client_running(steam):
+    return subprocess.run(["pgrep", "-f", "%s/steamrtarm64/steam( |$)" % steam], stdout=subprocess.DEVNULL).returncode == 0
+
+
+def run(steam, state, dry_run=False):
+    config = os.path.join(steam, "config", "config.vdf")
+    try:
+        with open(config, encoding="utf-8", errors="replace") as f:
+            tokens = tokenize(f.read())
+    except OSError:
+        return "no config.vdf yet"
+    if not balanced(tokens):
+        return "config.vdf doesn't parse; left alone"
+    mapping = mapping_block(tokens)
+    if mapping is None:
+        return "config.vdf has no Steam section; left alone"
+    games = {app for app, info in read_appinfo(os.path.join(steam, "appcache", "appinfo.vdf")).items() if needs_fex(*info)}
+    try:
+        with open(state, encoding="utf-8") as f:
+            mapped = set(json.load(f))
+    except (OSError, ValueError, TypeError):
+        mapped = set()
+    current = {app: name for app, (_, name) in entries(tokens, mapping).items()}
+    changes, after = plan(current, games, mapped)
+    added = sorted(a for a, t in changes.items() if t)
+    removed = sorted(a for a, t in changes.items() if t is None)
+    summary = "%d x86 Linux games; mapped %d (%s), unmapped %d (%s)" % (
+        len(games), len(added), " ".join(added[:20]) + (" ..." if len(added) > 20 else ""),
+        len(removed), " ".join(removed))
+    if dry_run:
+        return summary + " [dry run]"
+    if changes:
+        apply(tokens, mapping, changes)
+        write(config, serialize(tokens))
+    if after != mapped:
+        os.makedirs(os.path.dirname(state), exist_ok=True)
+        write(state, json.dumps(sorted(after, key=lambda a: int(a) if a.isdigit() else 0)))
+    return summary
+
+
+def main():
+    dry_run = "--dry-run" in sys.argv[1:]
+    if not dry_run and client_running(STEAM):
+        print("localdesktop-steam-compat: Steam is running; mappings are written before it starts")
+        return 0
+    print("localdesktop-steam-compat: " + run(STEAM, STATE, dry_run))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

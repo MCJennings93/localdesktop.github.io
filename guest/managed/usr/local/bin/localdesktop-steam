@@ -103,6 +103,9 @@ channel=$(localdesktop-steam-install --channel)
 # The client exits with 42 to restart itself after an update, as steam.sh handles; up to five times.
 n=0
 while :; do
+    # x86-only Linux games get "Linux x86 (FEX)" unless the user picked another tool. The client
+    # rewrites config.vdf when it exits, so this runs before each start (localdesktop-steam-compat).
+    running || localdesktop-steam-compat
     # shellcheck disable=SC2086
     "$S/steamrtarm64/steam" -clientbeta "$channel" "$ui" $deck -no-cef-sandbox -cef-ozone-platform=x11 \
         -cef-force-gpu -cef-use-gl=angle -cef-use-angle=vulkan "$@"
