@@ -97,7 +97,8 @@ Open:
    resolution follow the real screen (gamescope patch 0123), so games default to the full screen
    on any phone, posture or external display. Games that only draw at 16:9 (Bastion) keep a
    per-game 1920x1080, where touch is exact ([Game Mode](docs/game-mode.md)). A game at the
-   native size follows rotation and folding (patch 0124; to be confirmed on the phone). Not yet
+   native size follows rotation and folding (patch 0124; confirmed with Golf With Your Friends in
+   every posture, Bastion unchanged). Not yet
    tried on an external display.
 3. **x86 Linux games default to our FEX tool** (`localdesktop-steam-compat`), keeping the user's
    pick. Golf With Your Friends runs full screen with touch and sound; it sometimes crashes in Unity
