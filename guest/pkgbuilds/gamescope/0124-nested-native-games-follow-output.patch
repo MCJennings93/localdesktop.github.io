@@ -1,0 +1,136 @@
+diff --git a/src/Utils/NativeGameFollow.h b/src/Utils/NativeGameFollow.h
+new file mode 100644
+index 0000000..7d52055
+--- /dev/null
++++ b/src/Utils/NativeGameFollow.h
+@@ -0,0 +1,22 @@
++#pragma once
++
++#include <cstdint>
++
++namespace gamescope
++{
++    // With several Xwayland servers, gamescope resizes only Steam's (#0) when the output changes
++    // (rotation, fold, window resize); a game server keeps the size Steam gave it at launch, and its
++    // picture is then scaled into the new shape with bars. A game server still at the old output's
++    // size was running at the native size, so it follows the output. One at any other size had a
++    // size chosen for it (Steam's per-game Game Resolution) and keeps it.
++    constexpr bool GameServerFollowsOutput( int32_t nRootWidth, int32_t nRootHeight,
++                                            uint32_t uOldWidth, uint32_t uOldHeight,
++                                            uint32_t uNewWidth, uint32_t uNewHeight )
++    {
++        if ( uOldWidth == 0 || uOldHeight == 0 || uNewWidth == 0 || uNewHeight == 0 )
++            return false;
++        if ( uOldWidth == uNewWidth && uOldHeight == uNewHeight )
++            return false;
++        return nRootWidth == int32_t( uOldWidth ) && nRootHeight == int32_t( uOldHeight );
++    }
++}
+diff --git a/src/steamcompmgr.cpp b/src/steamcompmgr.cpp
+index b1de060..b2c825f 100644
+--- a/src/steamcompmgr.cpp
++++ b/src/steamcompmgr.cpp
+@@ -88,6 +88,7 @@
+ #include "vblankmanager.hpp"
+ #include "log.hpp"
+ #include "Utils/Defer.h"
++#include "Utils/NativeGameFollow.h"
+ #include "win32_styles.h"
+ #include "edid.h"
+ #include "hdmi.h"
+@@ -6915,6 +6916,18 @@ static inline float santitize_float( float f )
+ // resolution, which reads that screen's size back, shrinks with it. An ignored request is answered as
+ // one that needs no change: the property is deleted, which is how gamescope says a request is done.
+ // Left in place, the client repeats it and then crashes (SIGSEGV seconds after starting).
++// With GAMESCOPE_NATIVE_GAMES_FOLLOW_OUTPUT=1, a game server at the native size follows output
++// changes (rotation, fold) as Steam's own server does; see Utils/NativeGameFollow.h.
++static bool NativeGamesFollowOutput()
++{
++	static const bool s_bFollow = []
++	{
++		const char *pszFollow = getenv( "GAMESCOPE_NATIVE_GAMES_FOLLOW_OUTPUT" );
++		return pszFollow && atoi( pszFollow ) != 0;
++	}();
++	return s_bFollow;
++}
++
+ static bool SteamScreenFollowsWindow( size_t server_idx, int width, int height )
+ {
+ 	static const bool s_bFollow = []
+@@ -10375,6 +10388,16 @@ steamcompmgr_main(int argc, char **argv)
+ 				wlserver_lock();
+ 				// Update only Steam, the root ctx, with the new output size for now
+ 				wlserver_set_xwayland_server_mode( 0, g_nOutputWidth, g_nOutputHeight, g_nOutputRefresh );
++				if ( NativeGamesFollowOutput() )
++				{
++					gamescope_xwayland_server_t *game_server = NULL;
++					for ( size_t i = 1; ( game_server = wlserver_get_xwayland_server( i ) ); i++ )
++					{
++						if ( gamescope::GameServerFollowsOutput( game_server->ctx->root_width, game_server->ctx->root_height,
++								currentOutputWidth, currentOutputHeight, g_nOutputWidth, g_nOutputHeight ) )
++							wlserver_set_xwayland_server_mode( i, g_nOutputWidth, g_nOutputHeight, g_nOutputRefresh );
++					}
++				}
+ 				wlserver_unlock();
+ 			}
+ 
+diff --git a/tests/meson.build b/tests/meson.build
+index d86bf9e..ec3388e 100644
+--- a/tests/meson.build
++++ b/tests/meson.build
+@@ -8,7 +8,7 @@ endforeach
+ 
+ gamescope_tests = executable(
+ 	'gamescope_tests',
+-	unittest_src + ['test_convar.cpp', 'test_cursor_routing.cpp', 'test_focus_placement.cpp', 'test_mangoapp_config.cpp', 'test_mangoapp_control.cpp', 'test_process.cpp', 'test_upscale.cpp', 'test_utils_parsers.cpp', 'test_utils_string.cpp', 'test_vrclient_detect.cpp', 'test_wayland_scaling.cpp'],
++	unittest_src + ['test_convar.cpp', 'test_cursor_routing.cpp', 'test_focus_placement.cpp', 'test_mangoapp_config.cpp', 'test_mangoapp_control.cpp', 'test_native_game_follow.cpp', 'test_process.cpp', 'test_upscale.cpp', 'test_utils_parsers.cpp', 'test_utils_string.cpp', 'test_vrclient_detect.cpp', 'test_wayland_scaling.cpp'],
+ 	include_directories: [srcdir, sol2_include],
+ 	dependencies: [catch2_dep, luajit_dep, cap_dep, drm_dep, glm_dep, wlroots_dep],
+ 	cpp_args: gamescope_cpp_args,
+@@ -21,6 +21,7 @@ test('cursor_routing', gamescope_tests, args: ['[cursor_routing]'])
+ test('wayland_scaling', gamescope_tests, args: ['[wayland_scaling]'])
+ test('focus_placement', gamescope_tests, args: ['[focus_placement]'])
+ test('mangoapp_config', gamescope_tests, args: ['[mangoapp_config]'])
++test('native_game_follow', gamescope_tests, args: ['[native_game_follow]'])
+ test('mangoapp_control', gamescope_tests, args: ['[mangoapp_control]'])
+ test('upscale', gamescope_tests, args: ['[upscale]'])
+ test('utils/parsers', gamescope_tests, args: ['[parsers]'])
+diff --git a/tests/test_native_game_follow.cpp b/tests/test_native_game_follow.cpp
+new file mode 100644
+index 0000000..dfcd3bc
+--- /dev/null
++++ b/tests/test_native_game_follow.cpp
+@@ -0,0 +1,33 @@
++#include <catch2/catch_test_macros.hpp>
++
++#include "Utils/NativeGameFollow.h"
++
++using namespace gamescope;
++
++TEST_CASE("a game at the native size follows rotation", "[native_game_follow]")
++{
++    REQUIRE( GameServerFollowsOutput( 2176, 1811, 2176, 1811, 1811, 2176 ) );
++    REQUIRE( GameServerFollowsOutput( 1811, 2176, 1811, 2176, 2176, 1811 ) );
++}
++
++TEST_CASE("a game at the native size follows a fold", "[native_game_follow]")
++{
++    REQUIRE( GameServerFollowsOutput( 2176, 1811, 2176, 1811, 2315, 903 ) );
++}
++
++TEST_CASE("a game with its own size keeps it", "[native_game_follow]")
++{
++    REQUIRE_FALSE( GameServerFollowsOutput( 1920, 1080, 2176, 1811, 1811, 2176 ) );
++    REQUIRE_FALSE( GameServerFollowsOutput( 1811, 1080, 2176, 1811, 1811, 2176 ) );
++}
++
++TEST_CASE("no change without a new size", "[native_game_follow]")
++{
++    REQUIRE_FALSE( GameServerFollowsOutput( 2176, 1811, 2176, 1811, 2176, 1811 ) );
++}
++
++TEST_CASE("no change before an output size is known", "[native_game_follow]")
++{
++    REQUIRE_FALSE( GameServerFollowsOutput( 0, 0, 0, 0, 1811, 2176 ) );
++    REQUIRE_FALSE( GameServerFollowsOutput( 2176, 1811, 2176, 1811, 0, 0 ) );
++}

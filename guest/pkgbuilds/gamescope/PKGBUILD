@@ -11,7 +11,7 @@
 
 pkgname=gamescope
 pkgver=3.16.29
-pkgrel=3
+pkgrel=4
 pkgdesc='SteamOS session compositing window manager'
 arch=(x86_64 aarch64)
 url=https://github.com/ValveSoftware/gamescope
@@ -108,9 +108,10 @@ source+=(
   0121-override-content-skip-toplevel-walk.patch
   0122-wayland-wake-after-host-events.patch
   0123-nested-steam-screen-follows-window.patch
+  0124-nested-native-games-follow-output.patch
   0200-localdesktop-nested-needs-no-primary-node.patch
 )
-b2sums+=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+b2sums+=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
 
 prepare() {
   cd gamescope
