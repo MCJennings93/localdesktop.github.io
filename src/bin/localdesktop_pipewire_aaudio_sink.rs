@@ -725,9 +725,25 @@ mod android {
         pw::init();
 
         let result = (|| {
-            let (aaudio_stream, rate, channels) = open_aaudio(args.rate, args.channels)?;
-            AAUDIO_STREAM.store(aaudio_stream, Ordering::Release);
+            // Android can refuse the first stream (seen right after the app starts: requestStart
+            // failed once, and the sink exiting took the whole sound stack down for the session).
+            // Run with the requested format and keep retrying, as after a device change.
+            let (rate, channels) = match open_aaudio(args.rate, args.channels) {
+                Ok((aaudio_stream, rate, channels)) => {
+                    AAUDIO_STREAM.store(aaudio_stream, Ordering::Release);
+                    (rate, channels)
+                }
+                Err(error) => {
+                    note!("opening AAudio failed: {error}; retrying in the background");
+                    AAUDIO_CHANNELS.store(args.channels as usize, Ordering::Release);
+                    AAUDIO_REOPENING.store(true, Ordering::Release);
+                    (args.rate, args.channels)
+                }
+            };
             let _ = AAUDIO_FORMAT.set((rate, channels));
+            if AAUDIO_STREAM.load(Ordering::Acquire).is_null() {
+                std::thread::spawn(reopen_aaudio);
+            }
             let sink = match SINK.get() {
                 Some(sink) => sink,
                 None => {

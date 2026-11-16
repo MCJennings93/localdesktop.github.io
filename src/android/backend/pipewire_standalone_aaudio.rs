@@ -28,6 +28,7 @@ use winit::platform::android::activity::AndroidApp;
 
 use crate::android::utils::application_context::get_application_context;
 use crate::core::config;
+use crate::core::restart::{next_attempt, restart_delay};
 
 macro_rules! pw_info {
     ($step:expr, $($arg:tt)*) => {
@@ -66,6 +67,8 @@ extern "C" {
 
 static AAUDIO_CHILDREN: Mutex<Option<PipewireAaudioChildren>> = Mutex::new(None);
 static AAUDIO_START_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+/// Set by `shutdown`: the monitor must not bring the backend back while the app exits.
+static AAUDIO_STOPPING: AtomicBool = AtomicBool::new(false);
 
 struct PipewireAaudioChildren {
     pipewire: Child,
@@ -88,6 +91,7 @@ struct PipewireAaudioEnv {
 
 /// Start the experimental PipeWire/AAudio bridge after the compositor is ready.
 pub fn spawn_after_ready(android_app: AndroidApp) {
+    AAUDIO_STOPPING.store(false, Ordering::SeqCst);
     if AAUDIO_START_IN_PROGRESS
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
@@ -102,7 +106,7 @@ pub fn spawn_after_ready(android_app: AndroidApp) {
     );
     thread::spawn(move || {
         let started = phase_begin("ensure_pipewire_aaudio");
-        let result = ensure_running(&android_app);
+        let result = ensure_running(&android_app, 0);
         AAUDIO_START_IN_PROGRESS.store(false, Ordering::SeqCst);
         match &result {
             Ok(()) => pw_info!(
@@ -117,6 +121,7 @@ pub fn spawn_after_ready(android_app: AndroidApp) {
 
 /// Stop the proof-of-concept processes, if they were started.
 pub fn shutdown() {
+    AAUDIO_STOPPING.store(true, Ordering::SeqCst);
     let children = if let Ok(mut slot) = AAUDIO_CHILDREN.lock() {
         slot.take()
     } else {
@@ -131,7 +136,8 @@ pub fn shutdown() {
     cleanup_socket(&runtime_dir);
 }
 
-fn ensure_running(android_app: &AndroidApp) -> Result<(), String> {
+/// `attempt` counts restarts since the backend last ran steadily (0 for a first start).
+fn ensure_running(android_app: &AndroidApp, attempt: u32) -> Result<(), String> {
     let stale_children = {
         let mut slot = AAUDIO_CHILDREN
             .lock()
@@ -289,7 +295,7 @@ fn ensure_running(android_app: &AndroidApp) -> Result<(), String> {
         wireplumber,
         sink,
     });
-    spawn_child_monitor(env.runtime_dir.clone());
+    spawn_child_monitor(env.runtime_dir.clone(), android_app.clone(), attempt);
 
     pw_info!(
         "server",
@@ -301,7 +307,11 @@ fn ensure_running(android_app: &AndroidApp) -> Result<(), String> {
     Ok(())
 }
 
-fn spawn_child_monitor(runtime_dir: PathBuf) {
+/// Watches the children. When one exits, the others are stopped and the whole backend is started
+/// again after a delay (see `restart_after_exit`): Android can refuse an audio stream for a moment
+/// (seen at app start), and giving up left the session without sound until the app restarted.
+fn spawn_child_monitor(runtime_dir: PathBuf, android_app: AndroidApp, attempt: u32) {
+    let started = Instant::now();
     thread::spawn(move || loop {
         thread::sleep(Duration::from_secs(1));
 
@@ -322,7 +332,7 @@ fn spawn_child_monitor(runtime_dir: PathBuf) {
                 Ok(Some(reason)) => {
                     pw_warn!(
                         "monitor",
-                        "{reason}; stopping PipeWire/AAudio backend and cleaning socket"
+                        "{reason}; stopping the PipeWire/AAudio backend to start it again"
                     );
                     slot.take()
                 }
@@ -337,9 +347,46 @@ fn spawn_child_monitor(runtime_dir: PathBuf) {
         if let Some(children) = exited_children {
             stop_children(children);
             cleanup_socket(&runtime_dir);
+            restart_after_exit(android_app, next_attempt(attempt, started.elapsed()));
             return;
         }
     });
+}
+
+fn restart_after_exit(android_app: AndroidApp, mut attempt: u32) {
+    loop {
+        let delay = restart_delay(attempt);
+        pw_warn!(
+            "monitor",
+            "restarting PipeWire/AAudio in {} ms (restart {})",
+            delay.as_millis(),
+            attempt + 1
+        );
+        thread::sleep(delay);
+        if AAUDIO_STOPPING.load(Ordering::SeqCst) {
+            pw_info!("monitor", "app is exiting; not restarting PipeWire/AAudio");
+            return;
+        }
+        if AAUDIO_START_IN_PROGRESS
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            pw_info!("monitor", "PipeWire/AAudio start already in progress");
+            return;
+        }
+        let result = ensure_running(&android_app, attempt);
+        AAUDIO_START_IN_PROGRESS.store(false, Ordering::SeqCst);
+        match result {
+            Ok(()) => {
+                pw_info!("monitor", "PipeWire/AAudio restarted");
+                return;
+            }
+            Err(e) => {
+                pw_error!("monitor", "restarting PipeWire/AAudio failed: {e}");
+                attempt = attempt.saturating_add(1);
+            }
+        }
+    }
 }
 
 fn poll_child_exit(children: &mut PipewireAaudioChildren) -> Result<Option<String>, String> {

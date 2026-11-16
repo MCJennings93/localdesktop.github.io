@@ -1,5 +1,6 @@
 pub mod core {
     pub mod config;
+    pub mod restart;
 }
 
 #[cfg(target_os = "android")]
