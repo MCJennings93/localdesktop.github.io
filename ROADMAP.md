@@ -113,6 +113,34 @@ Open:
    - Plasma Mobile may not show .desktop Actions (Restart Steam).
    - A real Steam update hasn't been seen through the progress notification yet (only replays).
 
+### 4. Everyday use (added 2026-11-20, order not set)
+1. **Shared clipboard.** Copy in Android and paste in the desktop, and the other way round. Today
+   the compositor only passes the selection between desktop apps (`SelectionHandler` is empty) and
+   nothing reaches Android's clipboard. Bridge the Wayland selection (text first) to Android's
+   ClipboardManager in both directions.
+2. **A desktop terminal that's good to use on the phone,** in place of Termux: pick a terminal,
+   make sure the Android keyboard, touch scrolling, text selection and copy/paste work in it, and
+   pin it to the Plasma Mobile launcher.
+   - **SSH shortcuts** to the user's own machines (home server, work PC and so on), one tap each.
+     The host list and keys stay only on the phone, outside git: nothing personal in the repo. If
+     there's a launcher at all, the repo gets only the generic part, which reads the host list
+     from the guest's home folder.
+3. **Keeping the guest up to date, security updates included.** Done: `localdesktop-update`
+   ([architecture](docs/architecture.md#guest-updates)). The session checks about once a day and
+   notifies when updates are waiting. "Update Linux" on the desktop runs the full update, with a
+   progress bar, mirror fallbacks and retries. Settings shows the last update and the last check.
+   The first run on the phone (2026-11-20) brought 276 packages current, openssl 4 included. At start, the app no
+   longer downgrades the stock libraries it ships for gamescope. Open:
+   - Tapping the update notification on Android only opens the app. Running the update from
+     there needs clicks on mirrored notifications to reach the desktop.
+   - Our own gamescope falls behind Arch (3.16.29 vs 3.17.0 now): rebase the patches when Arch
+     updates it.
+   - `.pacnew` files (pacman.conf, passwd) are left for the user. Nothing reports them yet.
+4. **Sleep the guest while the app is in the background.** Pause the session when Android sends
+   the app to the background and resume it when the app is opened again, to save battery. This
+   conflicts with goal 1 (audio and video keep playing while hidden), so it needs a rule first:
+   for example, sleep only when nothing is playing sound, or after a timeout, or with a setting.
+
 ## Backlog (unordered)
 - **Green or grayscale video frames in Chromium/Brave.** Worked around with
   `--disable-gpu-memory-buffer-video-frames`; the root cause is open. The notes give two tests:

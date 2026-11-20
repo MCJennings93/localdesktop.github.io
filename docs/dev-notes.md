@@ -1535,3 +1535,15 @@ Backlog unchanged: shade black flash (parked), shade jank (needs on-phone cues),
 - Sound restart: killed the aaudio sink (SIGTERM) 16:17:02 → "stopping the PipeWire/AAudio backend to start it again", "restarting ... in 2000 ms (restart 2)" (stack was up <60 s after the install restart, so attempt 2 is right), "PipeWire/AAudio restarted" 16:17:05; new pids, /tmp/pulse/native back.
 - FEX default: at the 16:17:50 Game Mode start, "39 x86 Linux games; mapped 37" (Golf + Bastion already mapped by hand); config.vdf has 39 localdesktop-fex entries. Still to see: that the client keeps them after it exits and rewrites config.vdf; a user-cleared mapping stays cleared.
 - Rotation: user "It fills the screen horizontal, vertical, folded, and unfolded. Bastion looks to be unchanged." Log: server #1 → 2176x1811, 1811x2176, 904x2315, 2315x904; Bastion 1920x1080.
+
+## 2026-11-20 — User's new items added to ROADMAP (section 4 "Everyday use", UNCOMMITTED)
+Clipboard sync Android<->desktop; desktop terminal instead of Termux + private SSH shortcuts (host list outside git); guest updates (last full -Syu 2026-10-29, sync DBs 10-29, no routine update path; IgnorePkg gamescope + PipeWire); sleep guest in background vs goal 1 (needs a rule). Order not chosen: ask.
+### 2026-11-20 — Guest updates (#3): built, phone caught up (UNCOMMITTED)
+- Phone before: last -Syu 2026-10-29, 276/834 pending. Catch-up done with the new tool: openssl 4.1.0, openssh 10.6p2, KWin/Plasma 6.8.3, mesa 26.3.1, PipeWire 1.6.11; gamescope held at -4 (Arch has 3.17.0). Session restarted fine on the new KWin.
+- mirror.archlinuxarm.org (redirector, the only active Server) stalled twice ("Operation too slow"); all 12 listed mirrors answer (nj.us fastest from the phone). Tool builds a per-run mirrorlist: user's servers, then the others ranked by HEAD time; plus 3 attempts on download errors.
+- pacman --noprogressbar prints "upgrading foo..." without (n/N): parse that.
+- Found: localdesktop-packages reinstalled any shipped blob whose version differed, so after an update it would DOWNGRADE stock aom/luajit (Arch 3.15.3 / 2.1.1795119671 vs shipped). Now: held (IgnorePkg) = exact, others only if missing or older. Verified after app restart: no downgrade.
+- ld-run runner loop died during the update (`while sleep 1` ends when coreutils is replaced): now `while :; do sleep 1 2>/dev/null`.
+- New files: guest/managed/usr/local/bin/localdesktop-update, usr/local/share/applications/localdesktop-update.desktop, guest/tools/update-test.py (15 pass). Changed: localdesktop-packages, startplasmamobile-localdesktop (daemon + runner), setup.rs (Xfce daemon), SettingsActivity.java ("Linux updates"), docs/architecture.md, ROADMAP.
+- Installed: dev-407596d-update-3 (~/localdesktop-bench/apks/). User checks pending: Plasma, Brave, sound, Game Mode (Golf, Bastion), Settings "Linux updates", "Update Linux" launcher (progress bar, "Already up to date").
+- 2026-11-20: user checked all of it by eye: good. Committed + pushed.
