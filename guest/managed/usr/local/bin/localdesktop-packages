@@ -1,9 +1,21 @@
 #!/bin/sh
 # Installs the packages the APK ships in /usr/local/share/localdesktop/packages (guest/blobs/packages)
-# whose version is not installed yet, offline with pacman -U: our gamescope (guest/pkgbuilds/gamescope)
-# and the libraries it needs that the base guest lacks. Run at session start.
+# offline with pacman -U: our gamescope (guest/pkgbuilds/gamescope) and the stock Arch Linux ARM
+# libraries it needs that the base guest lacks. Run at session start.
 # Our gamescope carries patches, so it is kept out of pacman -Syu (IgnorePkg); Arch's would replace it.
+# A held package (IgnorePkg: our own builds) is installed at exactly the shipped version. Any other
+# is installed only when missing or older than the shipped one: guest updates (localdesktop-update)
+# move the stock libraries past what the APK carries, and putting ours back would downgrade them.
 DIR=/usr/local/share/localdesktop/packages
+conf=/etc/pacman.conf
+if ! grep -Eq '^IgnorePkg *=.*(^|[ =])gamescope( |$)' "$conf"; then
+    if grep -q '^IgnorePkg *=' "$conf"; then
+        sed -i 's/^\(IgnorePkg *=.*\)$/\1 gamescope/' "$conf"
+    else
+        sed -i 's/^\[options\]$/[options]\nIgnorePkg = gamescope/' "$conf"
+    fi
+fi
+held=" $(pacman-conf IgnorePkg | tr '\n' ' ') "
 # App updates add files here but never remove the ones a newer APK dropped, so a package can have
 # several. Only the newest of each (pacman's vercmp) counts; older files are deleted, or each start
 # would install the other one (gamescope flipped between 3.16.29-1 and -2 on every start).
@@ -27,19 +39,17 @@ for name in $(cut -d' ' -f1 "$list" | sort -u); do
             rm -f "$f"
         fi
     done < "$list"
-    [ "$(pacman -Q "$name" 2>/dev/null | cut -d' ' -f2)" = "$newest" ] || want="$want $newest_file"
+    installed=$(pacman -Q "$name" 2>/dev/null | cut -d' ' -f2)
+    [ "$installed" = "$newest" ] && continue
+    case $held in
+    *" $name "*) ;;
+    *) [ -n "$installed" ] && [ "$(vercmp "$installed" "$newest")" -gt 0 ] && continue ;;
+    esac
+    want="$want $newest_file"
 done
 rm -f "$list"
 if [ -n "$want" ]; then
     echo "localdesktop-packages: installing$want"
     # shellcheck disable=SC2086
     pacman -U --noconfirm --noprogressbar $want
-fi
-conf=/etc/pacman.conf
-if ! grep -Eq '^IgnorePkg *=.*(^|[ =])gamescope( |$)' "$conf"; then
-    if grep -q '^IgnorePkg *=' "$conf"; then
-        sed -i 's/^\(IgnorePkg *=.*\)$/\1 gamescope/' "$conf"
-    else
-        sed -i 's/^\[options\]$/[options]\nIgnorePkg = gamescope/' "$conf"
-    fi
 fi
