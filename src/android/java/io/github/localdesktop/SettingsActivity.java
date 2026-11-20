@@ -21,6 +21,15 @@ import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.InputStream;
+import java.text.DateFormat;
+import java.util.Date;
+
+import org.json.JSONObject;
+
 /**
  * Local Desktop's settings, opened from the app's page in Android's settings. It runs in its own
  * process, so a desktop that is stuck or keeps crashing can still be fixed from here.
@@ -61,6 +70,10 @@ public final class SettingsActivity extends Activity {
         note(list, "Touches reach the desktop as touches, for touch-first desktops such as Plasma Mobile, which drag, flick and swipe from the edges themselves. Off: a touch is a mouse pointer, for desktops such as Xfce.");
         texts[0] = field(list, "User", false);
         note(list, "Log in as this user. It has to exist in Linux first.");
+
+        heading(list, "Linux updates");
+        note(list, updateStatus());
+        note(list, "Local Desktop checks for Arch Linux updates about once a day while the desktop runs, and a notification says when some are waiting. To install them, open Update Linux on the desktop, or tap the notification there.");
 
         heading(list, "Commands");
         note(list, "How Local Desktop checks for, installs and starts the desktop environment.");
@@ -184,6 +197,47 @@ public final class SettingsActivity extends Activity {
         launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
         startActivity(launch);
         finish();
+    }
+
+    /**
+     * When Linux was last updated and checked, from the state file localdesktop-update writes in
+     * the guest (/var/lib/localdesktop-update/state.json).
+     */
+    private String updateStatus() {
+        JSONObject state;
+        try {
+            File file = new File(getFilesDir(), "arch/var/lib/localdesktop-update/state.json");
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            try (InputStream in = new FileInputStream(file)) {
+                byte[] buffer = new byte[4096];
+                for (int n; (n = in.read(buffer)) > 0; ) {
+                    bytes.write(buffer, 0, n);
+                }
+            }
+            state = new JSONObject(bytes.toString("UTF-8"));
+        } catch (Exception e) {
+            return "Not checked yet: the first check runs a few minutes after the desktop starts.";
+        }
+        DateFormat format = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT);
+        StringBuilder text = new StringBuilder();
+        long updated = state.optLong("last_update", 0);
+        String result = state.optString("last_update_result", "");
+        if (updated == 0) {
+            text.append("Last update: none through Local Desktop yet.");
+        } else if (result.equals("ok")) {
+            text.append("Last update: ").append(format.format(new Date(updated * 1000)))
+                    .append(", ").append(state.optInt("last_update_count", 0)).append(" packages.");
+        } else {
+            text.append("Last update failed (").append(format.format(new Date(updated * 1000)))
+                    .append("): ").append(result);
+        }
+        long checked = state.optLong("last_check", 0);
+        if (checked != 0) {
+            int pending = state.optInt("pending", 0);
+            text.append("\nLast check: ").append(format.format(new Date(checked * 1000))).append(", ")
+                    .append(pending == 0 ? "up to date." : pending + (pending == 1 ? " update" : " updates") + " waiting.");
+        }
+        return text.toString();
     }
 
     private void heading(LinearLayout list, String text) {

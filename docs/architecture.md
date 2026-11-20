@@ -154,6 +154,16 @@ When the session ends, its copies on Android are cancelled, and the agent closes
 
 Known limits: icons don't cross yet, so every copy on Android uses the app's own icon, and only the default action crosses. A Linux notification that leaves the desktop's history without a `NotificationClosed` keeps its copy on Android.
 
+### Guest updates
+
+The guest is Arch Linux ARM, which has no security-only channel and doesn't support partial upgrades, so every update is a full `pacman -Syu`. First setup runs one, and after that `/usr/local/bin/localdesktop-update` keeps the guest current:
+
+- `daemon` starts with each session (Plasma's session script, Xfce's session init). Ten minutes in, and then about once a day, it runs `check`. It skips the check while Game Mode runs. When updates are waiting, it posts a desktop notification, which the bridge also shows on Android. Tapping that notification on the desktop runs `apply`.
+- `check` syncs a scratch copy of the package databases (`/var/lib/localdesktop-update/db`, next to the live local database), so a check never leaves the system half-updated. It records how many updates are waiting and which security-relevant packages are among them.
+- `apply` (also the "Update Linux" launcher entry) runs the full update with a progress bar, and refuses while Game Mode runs. Our gamescope stays held. The app's PipeWire hold is lifted for the run, as first setup does, and any hold of the user's own is kept. The mirror list for the run puts the user's servers first, then every other Arch Linux ARM mirror ranked by how fast it answers. pacman moves to the next server for a file that fails, so one stalled mirror (the `mirror.archlinuxarm.org` redirector, often) doesn't fail the update. A run that still fails while downloading is retried up to three times, and pacman's cache keeps what already arrived. Output goes to `/var/log/localdesktop-update.log`.
+
+The state (last check, what's waiting, last update and its result) is JSON in `/var/lib/localdesktop-update/state.json`, which the app's settings screen shows under "Linux updates". `guest/tools/update-test.py` tests the config rewrite, mirror fallbacks, parsing and progress on any PC.
+
 That is the whole runtime loop: resume → bind renderer → configure output → launch desktop → translate input → render, suspend tears the renderer down, and the next resume rebuilds it. Everything below this line is about producing the `.apk` that ships all of the above.
 
 # `xbuild` — the cross-compiling build path

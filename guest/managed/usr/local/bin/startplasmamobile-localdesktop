@@ -100,7 +100,10 @@ run_session() {
 if [ -e /etc/localdesktop/test-runner ]; then
     mkdir -p /tmp/ld-run
     (
-        while sleep 1; do
+        # Not `while sleep 1`: a guest update replacing coreutils leaves no sleep for a moment,
+        # which would end the loop for the rest of the session.
+        while :; do
+            sleep 1 2>/dev/null
             for f in /tmp/ld-run/*.sh; do
                 [ -f "$f" ] || continue
                 mv -f "$f" "$f.running" || continue
@@ -114,7 +117,7 @@ echo "== direct KWin on wayland-0, scale $LOCALDESKTOP_OUTPUT_SCALE"
 # D-Bus-activated services (portals) must join KWin (wayland-2), not the app compositor.
 # --scale only covers the first frame: nested KWin then follows the app's wp_fractional_scale,
 # which tracks the Android display density across rotation, fold/unfold and display changes.
-run_session dbus-run-session -- sh -c "dbus-update-activation-environment WAYLAND_DISPLAY=wayland-2; /usr/local/bin/localdesktop-notify-bridge & exec $KWIN --scale $LOCALDESKTOP_OUTPUT_SCALE $SHELL_CMD"
+run_session dbus-run-session -- sh -c "dbus-update-activation-environment WAYLAND_DISPLAY=wayland-2; /usr/local/bin/localdesktop-notify-bridge & /usr/local/bin/localdesktop-update daemon & exec $KWIN --scale $LOCALDESKTOP_OUTPUT_SCALE $SHELL_CMD"
 
 # labwc reuses the app's output scale via localdesktop-wlroots-output, so KWin runs at scale 1
 # inside it; labwc is told to exit when KWin does so a dead KWin is noticed.

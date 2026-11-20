@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Update Linux
+Comment=Install the waiting Arch Linux ARM updates (a full update; close any game first)
+Exec=/usr/local/bin/localdesktop-update apply
+Icon=system-software-update
+Terminal=false
+Categories=System;

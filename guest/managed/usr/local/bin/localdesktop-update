@@ -1,0 +1,455 @@
+#!/usr/bin/env python3
+"""Keeps the guest's Arch Linux ARM up to date: checks for updates and installs them when asked.
+
+    localdesktop-update check    sync a scratch copy of the package databases, count what's waiting
+    localdesktop-update apply    full upgrade (pacman -Syu), with a progress bar in the desktop
+    localdesktop-update daemon   run by the session: check about once a day, notify when updates wait
+    localdesktop-update status   print the state file
+
+Arch has no security-only channel and doesn't support partial upgrades, so every update is a full
+one. The check never touches the live sync databases: it syncs a copy under STATE_DIR next to the
+installed-package database, so the system is never left half-updated by a check.
+
+Holds during an update: our gamescope (guest/pkgbuilds/gamescope) stays held, or Arch's would
+replace it. The app's PipeWire hold (PIPEWIRE_GUEST_LOCK_PACKAGES in src/android/proot/setup.rs)
+is lifted for the run, as first setup does, so PipeWire gets its fixes too and a pipewire split
+package can't move ahead of the rest. Any other IgnorePkg entry (the user's own) is kept.
+
+The update never starts while Game Mode runs, and the daemon doesn't notify then either.
+State (last check, what's waiting, last update and its result) is JSON in STATE_FILE, which the
+app's settings screen reads. Output of each update goes to LOG_FILE.
+
+Managed by the Local Desktop app: it is rewritten on every app start, so local edits are lost.
+"""
+import fcntl
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+
+STATE_DIR = "/var/lib/localdesktop-update"
+STATE_FILE = os.path.join(STATE_DIR, "state.json")
+LOCK_FILE = os.path.join(STATE_DIR, "lock")
+LOG_FILE = "/var/log/localdesktop-update.log"
+PACMAN_CONF = "/etc/pacman.conf"
+MIRRORLIST = "/etc/pacman.d/mirrorlist"
+LOCAL_DB = "/var/lib/pacman/local"
+# Kept in sync with PIPEWIRE_GUEST_LOCK_PACKAGES in src/android/proot/setup.rs.
+PIPEWIRE_HOLD = {
+    "libpipewire", "pipewire", "pipewire-alsa", "pipewire-audio", "pipewire-jack", "pipewire-pulse",
+    "pipewire-v4l2", "pipewire-zeroconf", "gst-plugin-pipewire", "wireplumber",
+}
+CHECK_EVERY = 24 * 3600
+FIRST_CHECK_DELAY = 10 * 60
+RETRY_DELAY = 3600
+DOWNLOAD_ATTEMPTS = 3
+# Packages whose updates are worth naming in the notification.
+SECURITY = ("openssl", "openssh", "curl", "gnutls", "nss", "krb5", "sudo", "glibc", "systemd",
+            "zlib", "expat", "libxml2", "ca-certificates", "linux-api-headers", "firefox", "xz")
+
+
+def log(*args):
+    print("localdesktop-update:", *args, file=sys.stderr, flush=True)
+
+
+# --- pure helpers (tested in guest/tools/update-test.py) ---
+
+def update_config(content, release=PIPEWIRE_HOLD, mirrorlist=None):
+    """pacman.conf for an update: the same file with the released packages out of IgnorePkg, and
+    the system mirror list swapped for `mirrorlist` when one is given."""
+    out = []
+    for line in content.splitlines():
+        m = re.match(r"^(\s*IgnorePkg\s*=)(.*)$", line)
+        if m:
+            kept = [name for name in m[2].split() if name not in release]
+            if not kept:
+                continue
+            line = f"{m[1]} {' '.join(kept)}"
+        if mirrorlist and re.match(rf"^\s*Include\s*=\s*{re.escape(MIRRORLIST)}\s*$", line):
+            line = f"Include = {mirrorlist}"
+        out.append(line)
+    return "\n".join(out) + "\n"
+
+
+def mirrors(content):
+    """A mirror list's servers: (active, commented out), each in file order."""
+    active, spare = [], []
+    for line in content.splitlines():
+        if m := re.match(r"^\s*Server\s*=\s*(\S+)", line):
+            active.append(m[1])
+        elif m := re.match(r"^\s*#\s*Server\s*=\s*(\S+)", line):
+            spare.append(m[1])
+    return active, [url for url in spare if url not in active]
+
+
+def fallback_mirrorlist(active, ranked):
+    """The user's servers first, then the others as fallbacks: pacman moves to the next server
+    for a file that fails, so one stalled mirror no longer fails the whole update."""
+    servers = active + [url for url in ranked if url not in active]
+    return "".join(f"Server = {url}\n" for url in servers)
+
+
+def parse_pending(output):
+    """`pacman -Qu` lines → [(name, old, new)], leaving out ignored (held) packages."""
+    pending = []
+    for line in output.splitlines():
+        m = re.match(r"^(\S+) (\S+) -> (\S+)$", line.strip())
+        if m:
+            pending.append((m[1], m[2], m[3]))
+    return pending
+
+
+def notable(pending):
+    return [name for name, _, _ in pending if name.startswith(SECURITY)]
+
+
+# One line per package as it's installed: "upgrading foo..." with --noprogressbar, which leaves out
+# the "(n/N)" counter pacman shows otherwise; both are accepted.
+INSTALL_LINE = re.compile(r"^(?:\(\s*\d+/\d+\) )?(upgrading|installing|reinstalling|downgrading|removing) "
+                          r"(\S+?)(?:\.\.\.)?$")
+
+
+def installed(line):
+    """The package a pacman output line says is being installed, or None (removals don't count)."""
+    m = INSTALL_LINE.match(line.strip())
+    return m[2] if m and m[1] != "removing" else None
+
+
+def progress(line, state):
+    """Follows pacman -Syu output: (step, percent) or None. Downloads are the bar's first half."""
+    if m := re.match(r"^Packages \((\d+)\)", line):
+        state["total"] = int(m[1])
+        return "Downloading updates", 2
+    if line.rstrip().endswith("downloading..."):
+        state["downloaded"] = state.get("downloaded", 0) + 1
+        total = max(state.get("total", 0), 1)
+        return "Downloading updates", 2 + 48 * min(state["downloaded"], total) // total
+    if line.startswith(":: Processing package changes"):
+        return "Installing updates", 50
+    if m := INSTALL_LINE.match(line.strip()):
+        state["installed"] = state.get("installed", 0) + 1
+        total = max(state.get("total", 0), 1)
+        return f"Installing {m[2]}", 50 + 45 * min(state["installed"], total) // total
+    if line.startswith(":: Running post-transaction hooks"):
+        return "Finishing", 96
+    return None
+
+
+# --- state ---
+
+def load_state():
+    try:
+        with open(STATE_FILE) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(**changes):
+    state = load_state()
+    state.update(changes)
+    os.makedirs(STATE_DIR, exist_ok=True)
+    tmp = STATE_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(state, f, indent=1)
+    os.replace(tmp, STATE_FILE)
+    return state
+
+
+def game_mode_running():
+    return subprocess.run(["pgrep", "-x", "gamescope"], stdout=subprocess.DEVNULL).returncode == 0
+
+
+def probe(url, timeout=5):
+    """Seconds to fetch a mirror's core database header, or None."""
+    import urllib.request
+    target = url.replace("$arch", os.uname().machine).replace("$repo", "core") + "/core.db"
+    started = time.monotonic()
+    try:
+        request = urllib.request.Request(target, method="HEAD")
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            if response.status != 200:
+                return None
+    except Exception:
+        return None
+    return time.monotonic() - started
+
+
+def write_mirrorlist():
+    """A mirror list for this run (see fallback_mirrorlist), or None to keep the system's."""
+    try:
+        with open(MIRRORLIST) as f:
+            active, spare = mirrors(f.read())
+    except OSError:
+        return None
+    if not spare:
+        return None
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(len(spare)) as pool:
+        times = list(pool.map(probe, spare))
+    ranked = [url for t, url in sorted((t, url) for t, url in zip(times, spare) if t is not None)]
+    fd, path = tempfile.mkstemp(prefix="mirrorlist-update-")
+    with os.fdopen(fd, "w") as f:
+        f.write(fallback_mirrorlist(active, ranked))
+    return path
+
+
+def write_update_config():
+    """(pacman.conf for this run, its mirror list or None); the caller deletes both."""
+    mirrorlist = write_mirrorlist()
+    with open(PACMAN_CONF) as f:
+        content = update_config(f.read(), mirrorlist=mirrorlist)
+    fd, path = tempfile.mkstemp(prefix="pacman-update-", suffix=".conf")
+    with os.fdopen(fd, "w") as f:
+        f.write(content)
+    return path, mirrorlist
+
+
+def remove(*paths):
+    for path in paths:
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
+# --- check ---
+
+def check():
+    """Syncs a scratch copy of the databases and records what an update would install."""
+    db = os.path.join(STATE_DIR, "db")
+    os.makedirs(os.path.join(db, "sync"), exist_ok=True)
+    link = os.path.join(db, "local")
+    if not os.path.islink(link):
+        if os.path.exists(link):
+            os.rename(link, link + ".old")
+        os.symlink(LOCAL_DB, link)
+    conf, mirrorlist = write_update_config()
+    try:
+        sync = subprocess.run(["pacman", "--config", conf, "--dbpath", db, "--logfile", "/dev/null",
+                               "-Sy", "--noprogressbar"], capture_output=True, text=True)
+        if sync.returncode != 0:
+            error = (sync.stderr.strip().splitlines() or ["sync failed"])[-1]
+            save_state(last_check_error=error)
+            log("check failed:", error)
+            return None
+        query = subprocess.run(["pacman", "--config", conf, "--dbpath", db, "-Qu"],
+                               capture_output=True, text=True)
+    finally:
+        remove(conf, mirrorlist)
+    pending = parse_pending(query.stdout)
+    save_state(last_check=int(time.time()), last_check_error=None, pending=len(pending),
+               notable=notable(pending))
+    return pending
+
+
+# --- desktop notifications and progress (session bus) ---
+
+class Desktop:
+    def __init__(self):
+        from gi.repository import Gio, GLib
+        self.Gio, self.GLib = Gio, GLib
+        self.bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+        self.job = None
+
+    def _call(self, name, path, iface, method, sig, args, ret=None):
+        return self.bus.call_sync(name, path, iface, method, self.GLib.Variant(sig, args),
+                                  self.GLib.VariantType(ret) if ret else None,
+                                  self.Gio.DBusCallFlags.NONE, -1, None)
+
+    def notify(self, title, body, replaces=0, action=None):
+        actions = ["default", action] if action else []
+        hints = {"desktop-entry": self.GLib.Variant("s", "localdesktop-update")}
+        return self._call("org.freedesktop.Notifications", "/org/freedesktop/Notifications",
+                          "org.freedesktop.Notifications", "Notify", "(susssasa{sv}i)",
+                          ("Linux updates", replaces, "system-software-update", title, body, actions,
+                           hints, 0), "(u)").unpack()[0]
+
+    def on_action(self, callback):
+        def handler(_bus, _sender, _path, _iface, _signal, params):
+            callback(*params.unpack())
+        self.bus.signal_subscribe("org.freedesktop.Notifications", "org.freedesktop.Notifications",
+                                  "ActionInvoked", "/org/freedesktop/Notifications", None,
+                                  self.Gio.DBusSignalFlags.NONE, handler)
+
+    def job_start(self):
+        hints = {"transient": self.GLib.Variant("b", True)}
+        self.job = self._call("org.kde.JobViewServer", "/JobViewServer", "org.kde.JobViewServerV2",
+                              "requestView", "(sia{sv})", ("localdesktop-update", 0, hints),
+                              "(o)").unpack()[0]
+
+    def job_update(self, step, percent):
+        if self.job:
+            path, iface = self.job, "org.kde.JobViewV2"
+            self._call("org.kde.JobViewServer", path, iface, "setInfoMessage", "(s)", (step,))
+            self._call("org.kde.JobViewServer", path, iface, "setPercent", "(u)", (percent,))
+
+    def job_end(self):
+        if self.job:
+            self._call("org.kde.JobViewServer", self.job, "org.kde.JobViewV2", "terminate", "(s)", ("",))
+            self.job = None
+
+
+def desktop():
+    """The session's notifications, or None outside a session (over ssh, from a script)."""
+    try:
+        return Desktop()
+    except Exception as error:  # no python-gobject, no bus, no Plasma job server
+        log("no desktop notifications:", error)
+        return None
+
+
+def summary(state):
+    count = state.get("pending", 0)
+    names = state.get("notable") or []
+    body = f"{count} package update{'s' if count != 1 else ''} waiting"
+    if names:
+        body += ", including " + ", ".join(names[:6])
+    return body + ". Tap this on the desktop, or open Update Linux, to install them (close any game first)."
+
+
+# --- apply ---
+
+def run_pacman(conf, logf, ui):
+    """One pacman -Syu: (status, last error line, packages installed, failed while downloading)."""
+    last_error, count, steps = None, 0, {}
+    proc = subprocess.Popen(["stdbuf", "-oL", "pacman", "--config", conf, "-Syu", "--noconfirm",
+                             "--noprogressbar"], stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, errors="replace")
+    for line in proc.stdout:
+        logf.write(line)
+        logf.flush()
+        if line.startswith("error:"):
+            last_error = line.strip()
+        if installed(line):
+            count += 1
+        step = progress(line, steps)
+        if step and ui:
+            try:
+                ui.job_update(*step)
+            except Exception:
+                pass
+    status = proc.wait()
+    return status, last_error, count, download_failed(last_error)
+
+
+def download_failed(error):
+    return bool(error) and ("download library error" in error or "failed retrieving file" in error
+                            or "failed to synchronize" in error)
+
+
+def apply():
+    os.makedirs(STATE_DIR, exist_ok=True)
+    lock = open(LOCK_FILE, "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        log("an update is already running")
+        return 1
+    ui = desktop()
+    if game_mode_running():
+        log("Game Mode is running; close it first")
+        if ui:
+            ui.notify("Linux update not started", "Close Game Mode first, then update again.")
+        return 1
+    if ui:
+        try:
+            ui.job_start()
+        except Exception as error:
+            log("no progress bar:", error)
+    conf, mirrorlist = write_update_config()
+    started = int(time.time())
+    status, last_error, count = 1, None, 0
+    try:
+        with open(LOG_FILE, "a") as logf:
+            for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+                logf.write(f"\n== {time.ctime()} pacman -Syu (attempt {attempt})\n")
+                status, last_error, count, download_failed = run_pacman(conf, logf, ui)
+                # A stalled mirror ("Operation too slow") aborts before anything is installed;
+                # what did download stays in pacman's cache, so a new attempt fetches only the rest.
+                if status == 0 or not download_failed:
+                    break
+    finally:
+        remove(conf, mirrorlist)
+        if ui:
+            try:
+                ui.job_end()
+            except Exception:
+                pass
+    if status == 0:
+        save_state(last_update=started, last_update_result="ok", last_update_count=count, pending=0,
+                   notable=[])
+        if ui:
+            ui.notify("Linux updated", f"{count} package{'s' if count != 1 else ''} updated. "
+                      "Restart Local Desktop to start using them." if count else "Already up to date.")
+    else:
+        reason = last_error or f"pacman exited with {status}"
+        save_state(last_update=started, last_update_result=reason, last_update_count=0)
+        if ui:
+            ui.notify("Linux update failed", f"{reason} Details: {LOG_FILE}")
+    log("done:", "ok" if status == 0 else last_error or status, f"({count} packages)")
+    return 0 if status == 0 else 1
+
+
+# --- daemon ---
+
+def daemon():
+    from gi.repository import GLib
+    ui = desktop()
+    if not ui:
+        return 1
+    shown = {"id": 0}
+
+    def on_action(notification, action):
+        if notification == shown["id"] and shown["id"] and action == "default":
+            shown["id"] = 0
+            subprocess.Popen([sys.argv[0], "apply"], start_new_session=True)
+
+    ui.on_action(on_action)
+
+    def tick():
+        state = load_state()
+        due = time.time() - state.get("last_check", 0) >= CHECK_EVERY
+        if due and not game_mode_running():
+            pending = check()
+            if pending is None:
+                GLib.timeout_add_seconds(RETRY_DELAY, tick)
+                return False
+            if pending:
+                shown["id"] = ui.notify("Linux updates available", summary(load_state()),
+                                        shown["id"], "Update now")
+        GLib.timeout_add_seconds(RETRY_DELAY, tick)
+        return False
+
+    GLib.timeout_add_seconds(FIRST_CHECK_DELAY, tick)
+    GLib.MainLoop().run()
+    return 0
+
+
+def main():
+    command = sys.argv[1] if len(sys.argv) > 1 else "status"
+    if command == "check":
+        pending = check()
+        if pending is None:
+            return 1
+        for name, old, new in pending:
+            print(f"{name} {old} -> {new}")
+        print(f"{len(pending)} updates waiting", file=sys.stderr)
+        return 0
+    if command == "apply":
+        return apply()
+    if command == "daemon":
+        return daemon()
+    if command == "status":
+        print(json.dumps(load_state(), indent=1))
+        return 0
+    print(__doc__, file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
